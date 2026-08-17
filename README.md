@@ -9,7 +9,7 @@ continuation onto the clip it continued from.
 I make short films with these. Everything here exists because I needed it, and
 the defaults are what I actually use.
 
-<img width="1045" height="1574" alt="Capture d&#39;écran 2026-08-17 221233" src="https://github.com/user-attachments/assets/d9984423-f965-470b-80c8-3faebffa079b" />
+<img width="500" height="750" alt="Capture d&#39;écran 2026-08-17 221233" src="https://github.com/user-attachments/assets/d9984423-f965-470b-80c8-3faebffa079b" />
 
 
 ---
