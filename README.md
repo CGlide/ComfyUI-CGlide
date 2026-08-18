@@ -206,3 +206,5 @@ Two things worth knowing:
 - MiniMax for H3, and the ComfyUI team for the core H3 nodes this builds on.
 - **madebyollin** for the TAE decoder that makes the preview readable.
 - **Kijai** for the quantised models that put this on smaller cards.
+
+Development assistance from Claude (Anthropic).
