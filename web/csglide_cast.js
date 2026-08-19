@@ -16,6 +16,32 @@ const ASSET_SUBFOLDER = "cglide";
 const FPS = 24;
 const MAX_IMAGES = 9, MAX_VIDEOS = 3, MAX_AUDIOS = 3;
 
+/* File-dialog filters. "video/*" alone is NOT enough: the browser builds that
+ * filter from the OS MIME registry, and Windows registers .mkv as
+ * video/x-matroska, which Chrome does not fold into video/*. The result is an
+ * mkv that drag-drops into a slot perfectly but is greyed out in the picker --
+ * and mkv is exactly what an H.265 render lands in. Extensions are listed
+ * alongside the wildcard so both routes agree on what the slot accepts. */
+const ACCEPT_VIDEO = "video/*,.mkv,.mp4,.m4v,.mov,.webm,.avi,.mpg,.mpeg,"
+                   + ".ts,.mts,.m2ts,.wmv,.flv,.ogv,.3gp";
+const ACCEPT_AUDIO = "audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg,.oga,.opus,"
+                   + ".aif,.aiff,.wma";
+const ACCEPT_IMAGE = "image/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tif,.tiff";
+
+/* Same problem read from the other end: a file the OS has no MIME type for
+ * arrives with an empty type, so the MIME test alone cannot say what it is.
+ * Used as a fallback by fileKind(). */
+const EXT_KIND = {
+  mkv: "video", mp4: "video", m4v: "video", mov: "video", webm: "video",
+  avi: "video", mpg: "video", mpeg: "video", ts: "video", mts: "video",
+  m2ts: "video", wmv: "video", flv: "video", ogv: "video", "3gp": "video",
+  wav: "audio", mp3: "audio", flac: "audio", m4a: "audio", aac: "audio",
+  ogg: "audio", oga: "audio", opus: "audio", aif: "audio", aiff: "audio",
+  wma: "audio",
+  png: "image", jpg: "image", jpeg: "image", webp: "image", avif: "image",
+  bmp: "image", tif: "image", tiff: "image", gif: "image",
+};
+
 /* Ratio families. The first size in each ladder is the canvas H3's own
  * adapt_canvas() would pick; everything below it holds the same aspect on a
  * shorter edge, every axis a multiple of 32. */
@@ -539,9 +565,18 @@ const CSS = `
 .gcast-play:hover { border-color:var(--h3-accent); color:var(--h3-accent); }
 .gcast-play:focus-visible { outline:2px solid var(--h3-accent); outline-offset:1px; }
 .gcast-play.on { border-color:var(--h3-accent); color:var(--h3-accent); }
-.gcast-h { position:absolute; top:4px; width:11px; height:36px; margin-left:-5.5px; border-radius:3px;
+/* 11px was wider than a short span: at 22f on a 13s clip the selection is about
+   20px, so the two handles covered it completely and there was no span left to
+   grab -- every slide became a jump-to-pointer instead of a relative drag.
+   Visible width halved to 6px. The grab area is padded back OUTWARD only, away
+   from the selection, so the handle stays easy to hit without stealing the
+   middle of the window back. */
+.gcast-h { position:absolute; top:4px; width:6px; height:36px; margin-left:-3px; border-radius:3px;
   background:var(--gc-wave); cursor:ew-resize; box-shadow:0 0 0 1px #101010;
   touch-action:none; }
+.gcast-h::after { content:""; position:absolute; top:-3px; bottom:-3px; }
+.gcast-h.a::after { left:-5px; right:0; }
+.gcast-h.b::after { left:0; right:-5px; }
 .gcast-track { touch-action:none; }
 .gcast-quick { display:flex; gap:4px; flex-wrap:wrap; }
 .gcast-quick button { all:unset; pointer-events:auto; cursor:pointer; padding:2px 7px; border-radius:4px;
@@ -1130,7 +1165,11 @@ function buildUI(node) {
     if (t.startsWith("image/")) return "image";
     if (t.startsWith("video/")) return "video";
     if (t.startsWith("audio/")) return "audio";
-    return "";              /* unknown type: let it through rather than block */
+    /* No MIME type at all is common for containers the OS does not know --
+       mkv on a machine without a matroska registration is the usual one. The
+       extension still says what it is. */
+    const ext = (f?.name || "").split(".").pop().toLowerCase();
+    return EXT_KIND[ext] || "";   /* still unknown: let it through, don't block */
   }
 
   /* First empty slot of the right kind, else the last one so a full rack still
@@ -1175,6 +1214,13 @@ function buildUI(node) {
       if (f) await assign(slot, f, kind, token);
     });
     node_.dataset.kind = kind;
+    /* The paste handler finds its target by hover, and a hovered element only
+     * knows its kind from the dataset. Carry the slot object and its token on
+     * the element too, so a paste can go straight into the slot under the
+     * pointer instead of always routing to the first free one. Re-set on every
+     * render, since these elements are rebuilt. */
+    node_.__gcastSlot = slot;
+    node_.__gcastToken = token || null;
     node_.addEventListener("dragover", (e) => {
       const k = dragKind(e);
       if (k === null) return;                    /* not a file: leave it alone */
@@ -1223,6 +1269,47 @@ function buildUI(node) {
    * browser can play, so an mp4's soundtrack works as well as a wav.
    */
   const wavCache = new Map();
+
+  /* ---- media element reuse ------------------------------------------
+   * render() rebuilds every slot, and a fresh <video> with a src reloads:
+   * the poster frame drops out and comes back, which reads as the whole
+   * video rack blinking every time an image is pasted or replaced. Nothing
+   * is actually wrong, but you have to look to be sure.
+   *
+   * The element is kept per slot instead and re-appended. Moving a live media
+   * element to a new parent does NOT reload it, so the frame stays put.
+   * Keyed weakly on the slot object, which survives renders and is dropped
+   * with the state on load().
+   */
+  const mediaCache = new WeakMap();
+
+  /* trim() re-wires transport listeners on every render. On a NEW element that
+   * is free; on a reused one they would stack up, so every added listener is
+   * recorded and cleared before the slot is wired again. */
+  function onMedia(m, ev, fn) {
+    (m.__gcastL || (m.__gcastL = [])).push([ev, fn]);
+    m.addEventListener(ev, fn);
+  }
+  function clearMediaListeners(m) {
+    for (const [ev, fn] of m.__gcastL || []) m.removeEventListener(ev, fn);
+    m.__gcastL = [];
+  }
+
+  /* Same element back while the file is unchanged; a new one when the slot has
+   * been given a different file, since that genuinely has to load. */
+  function mediaFor(slot, tag, file) {
+    const cached = mediaCache.get(slot);
+    if (cached && cached.tagName === tag.toUpperCase() && cached.__gcastFile === file) {
+      clearMediaListeners(cached);
+      return cached;
+    }
+    const m = el(tag);
+    m.__gcastFile = file;
+    m.src = viewURL(file);
+    m.preload = "metadata";
+    mediaCache.set(slot, m);
+    return m;
+  }
 
   function peaksFor(file) {
     if (wavCache.has(file)) return wavCache.get(file);
@@ -1303,8 +1390,8 @@ function buildUI(node) {
     const wave = el("canvas", "gcast-wave");
     const head = el("div", "gcast-head");
     const span = el("div", "gcast-span");
-    const hA = el("div", "gcast-h"); hA.tabIndex = 0; hA.title = "Trim start";
-    const hB = el("div", "gcast-h"); hB.tabIndex = 0; hB.title = "Trim end";
+    const hA = el("div", "gcast-h a"); hA.tabIndex = 0; hA.title = "Trim start";
+    const hB = el("div", "gcast-h b"); hB.tabIndex = 0; hB.title = "Trim end";
     const used = el("div", "gcast-used");
     track.append(wave, span, used, head, hA, hB);
     if (label) track.append(el("div", "gcast-wavlabel", label));
@@ -1347,9 +1434,9 @@ function buildUI(node) {
       raf = requestAnimationFrame(paintHead);
     };
     if (media) {
-      media.addEventListener("timeupdate", stopAt);
-      media.addEventListener("play", () => { play.textContent = "\u23F8"; play.classList.add("on"); paintHead(); });
-      media.addEventListener("pause", () => {
+      onMedia(media, "timeupdate", stopAt);
+      onMedia(media, "play", () => { play.textContent = "\u23F8"; play.classList.add("on"); paintHead(); });
+      onMedia(media, "pause", () => {
         play.textContent = "\u25B6"; play.classList.remove("on");
         cancelAnimationFrame(raf); head.style.display = "none";
       });
@@ -1618,9 +1705,10 @@ function buildUI(node) {
     if (kind === "video") {
       body = el("div", "gcast-thumb");
       if (slot.file) {
-        const v = el("video");
+        const v = mediaFor(slot, "video", slot.file);
         media = v;
-        v.src = viewURL(slot.file); v.muted = true; v.playsInline = true; v.preload = "metadata";
+        v.playsInline = true;
+        if (v.paused) v.muted = true;   // a reused element mid-playback keeps its sound
         v.loop = false;   // looping wraps to frame 0 and sails past the out point
         // silent hover preview, but only while the transport is not in use
         v.onmouseenter = () => { if (v.muted) v.play().catch(() => {}); };
@@ -1629,9 +1717,7 @@ function buildUI(node) {
       } else body.append(el("div", "gcast-empty", "+"));
     } else {
       if (slot.file) {
-        media = el("audio");
-        media.src = viewURL(slot.file);
-        media.preload = "metadata";
+        media = mediaFor(slot, "audio", slot.file);
         media.style.display = "none";
         card.append(media);
         body = null;      // the waveform carries the filename instead
@@ -1671,7 +1757,7 @@ function buildUI(node) {
       card.append(lab2);
     }
 
-    wireDrop(body || card, slot, kind, kind === "video" ? "video/*" : "audio/*", token);
+    wireDrop(body || card, slot, kind, kind === "video" ? ACCEPT_VIDEO : ACCEPT_AUDIO, token);
     return card;
   }
 
@@ -1757,7 +1843,7 @@ function buildUI(node) {
       [["first", "First frame", "@first"], ["last", "Last frame", "@last"]].forEach(([key, cap, tok]) => {
         const slot = st.slots[key];
         const card = imageSlot(slot, cap, tok);
-        wireDrop(card, slot, "image", "image/*", tok);
+        wireDrop(card, slot, "image", ACCEPT_IMAGE, tok);
         flGrid.append(card);
       });
     }
@@ -1769,7 +1855,7 @@ function buildUI(node) {
     if (!isFL) {
       st.slots.images.forEach((slot, i) => {
         const card = imageSlot(slot, String(i + 1), `@image${i + 1}`);
-        wireDrop(card, slot, "image", "image/*", `@image${i + 1}`);
+        wireDrop(card, slot, "image", ACCEPT_IMAGE, `@image${i + 1}`);
         imgGrid.append(card);
       });
       st.slots.videos.forEach((slot, i) => vidGrid.append(mediaSlot(slot, "video", `video ${i + 1}`, `@video${i + 1}`, usedSeconds)));
@@ -3621,9 +3707,95 @@ function buildUI(node) {
     const f = e.dataTransfer?.files?.[0];
     const kind = f && (fileKind(f) || k);
     if (!f || !kind) return;
-    const routed = routeToFreeSlot(kind, f);
+    /* awaited: routeToFreeSlot is async, so the un-awaited call returned a
+       Promise and the "no rack took it" flash could never fire */
+    const routed = await routeToFreeSlot(kind, f);
     if (!routed) flashPanel();
   });
+
+  /* ---------------------------------------------------------------- paste
+   * Ctrl+V, the same way a stock LoadImage node takes it.
+   *
+   * ComfyUI's own paste handler looks for pasteFile() on the CURRENT node and,
+   * finding none, drops a fresh LoadImage node on the graph -- the same escape
+   * the drop handler above closes. Two entries, deliberately non-overlapping:
+   *
+   *   pointer over the panel   -> this listener takes it, hovered slot wins
+   *   node selected, pointer elsewhere -> core calls pasteFile() (see register)
+   *
+   * It listens in the CAPTURE phase on window so it runs before core's
+   * document-level handler, and only stops propagation when it actually
+   * consumes the paste. Hover is the signal rather than selection because
+   * pressing the panel background does not select the node (the pointerdown
+   * re-dispatch to the canvas was removed) -- so "click a slot, hit Ctrl+V"
+   * would otherwise paste into nothing.
+   */
+  let overPanel = false;
+  let hoverEl = null;
+  /* pointerenter/leave do not bubble, so these describe the panel itself */
+  root.addEventListener("pointerenter", () => { overPanel = true; });
+  root.addEventListener("pointerleave", () => { overPanel = false; hoverEl = null; });
+  /* pointerover DOES bubble: fires for every descendant, so hoverEl clears
+     itself as soon as the pointer moves off a slot onto plain panel */
+  root.addEventListener("pointerover", (e) => {
+    hoverEl = e.target?.closest?.("[data-kind]") || null;
+  });
+
+  /* A clipboard image has no useful name -- Chrome calls every one of them
+   * image.png. Stamping it keeps successive pastes apart in input/cglide/
+   * instead of leaning on the server's (1)(2) suffixing. */
+  function nameForPaste(file) {
+    const mime = file.type || "image/png";
+    const ext = (mime.split("/")[1] || "png").split("+")[0].replace("jpeg", "jpg");
+    return `pasted-${Date.now()}.${ext}`;
+  }
+
+  /* Paste has no pointer trail, so without a flash there is no telling which
+     of nine slots took the image. Reuses the drop look. */
+  function flashTarget(node_) {
+    if (!node_) return;
+    node_.classList.add("drop");
+    setTimeout(() => node_.classList.remove("drop"), 260);
+  }
+
+  async function takePaste(file, target) {
+    if (!file) return;
+    const kind = fileKind(file) || "image";
+    const named = new File([file], nameForPaste(file), { type: file.type || "image/png" });
+    const slot = target && root.contains(target) ? target.__gcastSlot : null;
+    if (slot) {
+      if (target.dataset.kind !== kind) { flashWrong(target); return; }
+      flashTarget(target);
+      await assign(slot, named, kind, target.__gcastToken || null);
+      return;
+    }
+    const routed = await routeToFreeSlot(kind, named);
+    if (!routed) flashPanel();
+  }
+
+  const onPaste = (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const file = Array.from(cd.files || [])[0]
+      || Array.from(cd.items || [])
+           .filter((i) => i.kind === "file")
+           .map((i) => i.getAsFile())
+           .find(Boolean);
+    if (!file) return;
+    const tgt = e.target;
+    const editing = !!tgt && (tgt.tagName === "TEXTAREA" || tgt.tagName === "INPUT");
+    /* Typing in the prompt: anything carrying text is a text paste, always.
+       A screenshot with no text beside it still belongs in a slot. */
+    if (editing && Array.from(cd.types || []).includes("text/plain")) return;
+    const over = hoverEl && root.contains(hoverEl) ? hoverEl : null;
+    const mine = overPanel || over || (editing && root.contains(tgt));
+    if (!mine) return;                  /* not ours: core, or pasteFile below */
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation?.();
+    takePaste(file, over);
+  };
+  window.addEventListener("paste", onPaste, true);
 
   ac.addEventListener("wheel", (e) => e.stopPropagation());
   root.addEventListener("scroll", () => closeAC(), true);
@@ -3632,8 +3804,15 @@ function buildUI(node) {
 
   return {
     root,
-    destroy() { ac.remove(); },
+    destroy() {
+      ac.remove();
+      /* a window listener per node instance would outlive the node */
+      window.removeEventListener("paste", onPaste, true);
+    },
     load,
+    /* Core's route, used when the node is selected but the pointer is not over
+       the panel. No hovered slot, so it routes like a loose drop. */
+    pasteFile(file) { takePaste(file, null); },
     save() { return JSON.stringify(st); },
     get state() { return st; },
   };
@@ -3726,6 +3905,17 @@ app.registerExtension({
       this.size = [980, MIN_H_REF];
       this.setSize?.([980, MIN_H_REF]);
       return r;
+    };
+
+    /* ComfyUI's document paste handler calls pasteFile() on the current node
+     * when the clipboard holds an image, and spawns a LoadImage node when no
+     * node answers. Answering here keeps the paste inside the panel. The
+     * hover-based listener in buildUI covers the commoner case where the node
+     * is under the pointer but was never selected. */
+    nodeType.prototype.pasteFile = function (file) {
+      if (!this.h3ui?.pasteFile) return false;
+      this.h3ui.pasteFile(file);
+      return true;               /* truthy: core treats the paste as handled */
     };
 
     const onRemoved = nodeType.prototype.onRemoved;

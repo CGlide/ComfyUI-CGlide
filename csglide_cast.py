@@ -493,9 +493,10 @@ class CSGlideCast:
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT", "STRING")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT",
+                    "STRING", "IMAGE")
     RETURN_NAMES = ("positive", "latent", "width", "height", "length", "seconds",
-                    "overlap_frames", "source_video")
+                    "overlap_frames", "source_video", "guide_frames")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -601,13 +602,14 @@ class CSGlideCast:
         0 - rather than calling that node, so the tail can be taken from the
         right end and levelled before the encode.
 
-        Returns (keyframe or None, frames anchored). The frame count is the
+        Returns (keyframe or None, frames anchored, the frames themselves).
+        The frame count is the
         head that comes back in the output and has to come off before the clip
         is joined to its predecessor.
         """
         cont = cfg.get("cont")
         if not cont:
-            return None, 0
+            return None, 0, None
 
         want = snap_guide_run(cont["frames"])
         if want < MIN_REF_FRAMES:
@@ -628,7 +630,14 @@ class CSGlideCast:
         frames = _load_video_tail(cont["file"], want + 17, cont["start"])
         if frames is None:
             frames = _load_video_frames(cont["file"], cont["start"], cont["end"], want + 17)
-        n = min(snap_guide_run(frames.shape[0]), want)
+        # Snap LAST. It used to be min(snap(available), want), which returns
+        # `want` untouched whenever want is the smaller of the two - and want
+        # comes from the browser's window, which on mkv can round to 23 or 24
+        # where the file really holds 22. Anything that is not 17k+5 makes the
+        # model reserve rows for one more latent frame than the encode produces,
+        # which is the constant shape mismatch: same size every time for a given
+        # canvas, a different size for every canvas.
+        n = snap_guide_run(min(frames.shape[0], want))
         if n < MIN_REF_FRAMES:
             raise ValueError(
                 "H3 Studio: %s gave only %d frames in that window; H3 needs %d. "
@@ -638,6 +647,18 @@ class CSGlideCast:
         frames = flatten_exposure(frames, cont["flatten"])
         frames = _resize(frames, width, height, "center")
         keyframe = {"resolved_frame_index": 0, "latent": vae.encode(frames)}
+
+        # The shape mismatch reports live here. The model reserves rows from the
+        # SHAPE of this guide latent and then fills them from the same tensor, so
+        # if those two disagree the numbers below say by how much - and whether
+        # the guide is a legal 17k+5 run in the first place.
+        try:
+            print("[H3 Studio] continue: window=%d frames  canvas=%dx%d  "
+                  "guide_latent=%s  target_latent=%s  clip_frames=%d"
+                  % (n, width, height, tuple(keyframe["latent"].shape),
+                     tuple(latent["samples"].tensors[0].shape), frame_count))
+        except Exception as e:
+            print("[H3 Studio] continue: shape report unavailable (%s)" % e)
 
         if cont["audio"]:
             # end=None: to EOF, so the carried sound finishes where the
@@ -658,7 +679,7 @@ class CSGlideCast:
         print("[H3 Studio] continue: %d frames from %s at frame 0%s, overlap %d"
               % (n, cont["file"],
                  " (levelled)" if cont["flatten"] > 0 else "", n))
-        return keyframe, n
+        return keyframe, n, frames
 
     # ---------------- main ----------------
 
@@ -667,8 +688,12 @@ class CSGlideCast:
 
         def finish(cond):
             """Shared tail for both modes: attach the continuation, if any."""
-            guide, overlap = self._continuation(
+            guide, overlap, guide_frames = self._continuation(
                 cfg, vae, audio_vae, latent, width, height, frame_count)
+            # exactly what was encoded, so the anchored run can be LOOKED AT
+            # instead of inferred from the result of a six minute sample
+            if guide_frames is None:
+                guide_frames = torch.zeros((1, 64, 64, 3))
             if guide is not None:
                 keyframes = list(cond[0][1].get("minimax_keyframes", []))
                 keyframes.append(guide)
@@ -677,7 +702,8 @@ class CSGlideCast:
             source = ""
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
-            return (cond, latent, width, height, frame_count, seconds, overlap, source)
+            return (cond, latent, width, height, frame_count, seconds, overlap,
+                    source, guide_frames)
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
