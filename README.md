@@ -18,7 +18,7 @@ the defaults are what I actually use.
 
 ```
 cd ComfyUI/custom_nodes
-git clone https://github.com/<your-user>/ComfyUI-CGlide
+git clone https://github.com/CGlide/ComfyUI-CGlide
 ```
 
 Restart ComfyUI. The nodes appear under **CGlide** in the node menu.
@@ -66,9 +66,9 @@ workflow. It builds the prompt and the conditioning, that's it.
 first-last-frame family.
 
 **Outputs:** `positive`, `latent`, `width`, `height`, `length`, `seconds`,
-`overlap_frames`, `source_video`.
+`overlap_frames`, `source_video`, `guide_frames`.
 
-The last two are for chaining — see below. Everything else you wire the way you
+The last ones are for chaining — see below. Everything else you wire the way you
 would with the native H3 nodes.
 
 ### What's in the panel
@@ -76,8 +76,9 @@ would with the native H3 nodes.
 - **Both model families in one node.** `First / last` and `Omni references` is a
   switch at the top; the accent colour follows so you always know which one
   you're in.
-- **Drag files onto slots.** Type `@` in the prompt and pick a reference to drop
-  its tag in.
+- **Drag files onto slots.** Or paste — Ctrl+V drops a screenshot straight into
+  the slot under your pointer. Type `@` in the prompt and pick a reference to
+  drop its tag in.
 - **"Sent to the encoder as".** The model sees `Picture 1`, `Picture 2` and so
   on, and the number comes from *which slots are filled*, not from the slot
   number. Leave a gap and your Picture 3 is not the one you think it is. This
@@ -139,6 +140,10 @@ Frames and audio into one file, in one ffmpeg pass, no second file to mux.
 - `fallback_on_failure` retries with a more compatible preset instead of
   throwing away a finished render. It says so loudly when it does.
 
+The 4:4:4 and ProRes presets don't play in a browser, so the node writes a small
+playable copy next to the real file just for the preview. The real file is the
+one in your output folder — the copy is only so you can watch it in the node.
+
 ---
 
 ## Glide Join — extending a clip
@@ -187,6 +192,72 @@ Two things worth knowing:
   and no seam mode can fix it.
 - Colour drift down a chain is real but small when the window is a true tail. If
   you see a step at the join it's more likely to be motion than colour.
+
+### last render
+
+Small thing but I use it constantly now. There's a `last render` button on the
+CONTINUE FROM slot — click it and your newest render lands in the slot. No going
+to the output folder, no dragging. The copy happens server side so nothing big
+goes through your browser.
+
+Hover it before clicking and it tells you which file it's about to take and what
+it is.
+
+### The chroma badge — read this one
+
+There's a little badge on the continuation waveform. Green for 4:4:4 and 4:2:2,
+orange for 4:2:0. It's not decoration.
+
+Here's what happened. I had a continuation that kept coming back slightly out of
+sync — Glide Join kept printing `frame correspondence was off by -2`. So I went
+looking at the anchor window, the frame counts, the way the tail is read. Wasted
+a good while in there.
+
+It was the codec. I was rendering AV1, which is 4:2:0 — three quarters of the
+colour is gone before the model ever reads those frames. Weaker guide, less
+exact anchor. I rendered the same pair again as H.264 4:4:4 and the correction
+line just disappeared. Then ProRes, which is 4:2:2 — also clean. So the line
+sits between 4:2:0 and 4:2:2, and anything above that is fine.
+
+So: **don't chain from a 4:2:0 file.** The badge tells you what's in the slot
+before you render.
+
+---
+
+## Render all — chaining a whole project
+
+Doing the above by hand for five clips is a lot of dragging files around. So
+this does the loop for you.
+
+Open the **Project** panel, pick a mode at the bottom, hit **Render all**:
+
+- **chained** — each render goes into the next clip's CONTINUE FROM. Glide Join
+  stitches as it goes, so the **last file is the whole thing**. There's no
+  separate assembly step.
+- **separate** — same loop, no continuation. Just queues all your clips one
+  after another.
+
+While it runs the node is locked and shows which clip it's on. **Stop** finishes
+the clip it's rendering and stops there — everything already done stays done.
+And if a render fails it stops, tells you which clip, and keeps the finished
+ones, so you can pick it up from there instead of starting over.
+
+If you don't like the result, **Revert** in the Project panel puts the project
+back exactly as it was before the run.
+
+Pick chained with a 4:2:0 preset selected in Glide Video and the node asks you
+first — every link in the chain pays for that, not just one join.
+
+Two limits worth saying out loud:
+
+- **Each link re-encodes the whole video so far.** Clip 5 means clip 1's frames
+  have been through the encoder five times. On `H.264 4:4:4 10-bit` at crf 12 I
+  can't see it, and FFV1 is lossless so it's free — but don't run a long chain
+  on a share preset. You'd be stacking generations *and* handing every link a
+  4:2:0 guide.
+- **One mode for the whole project, for now.** Per-link — where each gap between
+  two clips picks its own mode — is what I actually want, and it's coming. This
+  is the simple version first.
 
 ---
 

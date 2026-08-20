@@ -166,6 +166,11 @@ function parseInitial(raw) {
     if (Number.isFinite(+c.dur)) out.cont.dur = +c.dur;
     if (c.audio) out.cont.audio = true;
     if (c.flatten) out.cont.flatten = true;
+    /* UI-only, and dropped by the Python whitelist: what the guide's chroma is,
+       so the 4:2:0 note survives a reload instead of vanishing until the file
+       is re-adopted. */
+    if (c.chroma) out.cont.chroma = String(c.chroma);
+    if (c.codec) out.cont.codec = String(c.codec);
   }
   return out;
 }
@@ -516,6 +521,40 @@ const CSS = `
   font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--h3-dim); }
 .gcast-slot.filled .gcast-cap { color:var(--h3-accent); }
 .gcast-cap .n { opacity:.55; }
+.gcast-cap .spacer { margin-left:auto; }
+.gcast-last { all:unset; pointer-events:auto; cursor:pointer; padding:1px 6px; border-radius:4px;
+  border:1px solid #4d3b22; color:#e8a758; font-size:9px; line-height:1.5;
+  font-family:ui-monospace,Consolas,monospace; }
+.gcast-last:hover { border-color:#ff9f43; color:#ff9f43; background:#ff9f4314; }
+.gcast-last:focus-visible { outline:2px solid #ff9f43; outline-offset:1px; }
+.gcast-last[disabled] { opacity:.45; cursor:default; }
+.gcast-last.warn { border-color:#c8892f; color:#ffc069; }
+.gcast-last.warn:hover { border-color:#ffc069; background:#ffc0691a; }
+.gcast-chroma { position:absolute; left:5px; top:5px; z-index:3; pointer-events:auto;
+  font-family:ui-monospace,Consolas,monospace; font-size:8px; line-height:1.5;
+  padding:1px 5px; border-radius:3px; cursor:help; white-space:nowrap;
+  background:#0b0b0bcc; border:1px solid #3f7d4f; color:#6fe08a; }
+.gcast-chroma.weak { border-color:#b5502a; color:#ff8a5c; }
+
+/* The run overlay covers the panel on purpose: while a run owns the node,
+   editing a clip that is about to be queued would silently change what gets
+   rendered. Blocking input is simpler to reason about than disabling widgets
+   one by one, and Stop is the only thing that stays live. */
+.gcast.running { position:relative; }
+.gcast-run { position:absolute; inset:0; z-index:60; display:flex;
+  align-items:center; justify-content:center; background:#07070799;
+  backdrop-filter:blur(1.5px); }
+.gcast-run .card { display:flex; flex-direction:column; gap:7px; align-items:center;
+  padding:16px 22px; border-radius:8px; background:#141414f2;
+  border:1px solid var(--h3-accent); box-shadow:0 10px 34px #000a; }
+.gcast-run .ttl { font-size:11px; color:var(--h3-accent); letter-spacing:.04em; }
+.gcast-run .msg { font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#e8e8e8; }
+.gcast-run .sub { font-size:10px; color:var(--h3-dim); min-height:12px; }
+.gcast-shots-foot.run .lbl { color:var(--h3-accent); }
+.gcast-runmode { background:#191919; color:#ccc; border:1px solid #333; border-radius:4px;
+  font-size:10px; padding:2px 4px; font-family:inherit; }
+.gcast-btn.run { border-color:var(--h3-accent); color:var(--h3-accent); }
+.gcast-btn.run:hover:not([disabled]) { background:#ff9f4318; }
 .gcast-x { all:unset; pointer-events:auto; cursor:pointer; margin-left:auto; color:var(--h3-dim); padding:0 3px;
   border-radius:3px; font-size:12px; line-height:1; }
 .gcast-x:hover { color:#ff7a7a; background:#ff7a7a1a; }
@@ -1205,6 +1244,130 @@ function buildUI(node) {
       if (kind === "video") slot.audio = true;
     }
     render(); commit();
+    /* Dropped or picked clips skip the adopt route entirely, so they arrive
+       with no chroma known -- and a clip from somewhere else is precisely the
+       one worth checking. Done after the render so the slot appears at once
+       and the badge follows. */
+    if (slot === st.cont && kind === "video") tagChroma(slot, name);
+  }
+
+  /* Ask the server what a file in input/ actually is. Quiet on failure: an
+     unknown chroma just means no badge, which is the state before this ran. */
+  async function tagChroma(slot, name) {
+    try {
+      const i = name.lastIndexOf("/");
+      const sub = i >= 0 ? name.slice(0, i) : "";
+      const base = i >= 0 ? name.slice(i + 1) : name;
+      const r = await api.fetchApi("/cglide/probe?type=input"
+        + `&filename=${encodeURIComponent(base)}&subfolder=${encodeURIComponent(sub)}`);
+      if (r.status !== 200) return;
+      const d = await r.json();
+      if (slot.file !== name) return;      /* the slot moved on while we waited */
+      slot.chroma = d.chroma || "";
+      slot.codec = d.codec || "";
+      /* a container the browser could not decode still has a real duration */
+      if (!slot.dur && d.duration) {
+        slot.dur = d.duration; slot.start = 0; slot.end = d.duration;
+      }
+      render(); commit();
+    } catch (err) {
+      console.warn("[H3 Studio] probe failed:", err);
+    }
+  }
+
+  /* ------------------------------------------------- adopt a finished render
+   * Renders land in output/, guides are read from input/cglide/. The copy is
+   * done SERVER-SIDE by /cglide/adopt_output -- pulling a 12s 4:4:4 file into
+   * the browser only to post the same bytes back would move hundreds of
+   * megabytes across the loopback for a disk copy.
+   */
+  /* ------------------------------------------------ what am I about to take?
+   * Hovering the button probes the newest output and says what it is, BEFORE
+   * it is adopted. Worth the round trip because chroma is not cosmetic here:
+   * measured on the same clip pair, an AV1 yuv420p10le guide made Glide Join
+   * report a -2 frame correspondence on every run, while 4:2:2 and 4:4:4
+   * guides reported none. Three quarters of the chroma is gone before the
+   * model sees the frames, so the anchor is weaker.
+   * Probing is cached server-side on path+mtime, so a second hover is free. */
+  const CHROMA_WARN = "4:2:0";
+  let hoverProbe = null;
+
+  function describeSource(info) {
+    if (!info || !info.name) return "Take the newest video from the output folder";
+    const what = [info.codec, info.chroma].filter(Boolean).join(" ");
+    const head = what ? `${info.name} — ${what}` : info.name;
+    if (info.chroma === CHROMA_WARN) {
+      return head + "\n\nSubsampled guide: the continuation anchors less exactly "
+                  + "and the join needs a frame correction. 4:2:2 or better is cleaner.";
+    }
+    return head;
+  }
+
+  function primeLastRenderTip(btn) {
+    /* one request per hover, and the answer is reused for the next one */
+    if (hoverProbe) { hoverProbe.then((i) => { btn.title = describeSource(i); }); return; }
+    hoverProbe = api.fetchApi("/cglide/recent_outputs?limit=1&probe=1")
+      .then((r) => (r.status === 200 ? r.json() : []))
+      .then((list) => (Array.isArray(list) && list.length ? list[0] : null))
+      .catch(() => null);
+    hoverProbe.then((i) => { btn.title = describeSource(i); });
+    /* the newest output changes as soon as anything renders */
+    setTimeout(() => { hoverProbe = null; }, 15000);
+  }
+
+  /* Adopt one NAMED output. Shared by the button and by the run loop, which
+     needs a specific file rather than whatever happens to be newest. */
+  async function adoptInto(slot, pick) {
+    const a = await api.fetchApi("/cglide/adopt_output", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: pick.name, subfolder: pick.subfolder || "", type: pick.type || "output",
+      }),
+    });
+    if (a.status !== 200) throw new Error(`adopt_output ${a.status}`);
+    const d = await a.json();
+    const name = d.subfolder ? `${d.subfolder}/${d.name}` : d.name;
+    clearSlot(slot);
+    slot.file = name;
+    /* Ask the browser first; fall back to the server's reading. The browser
+       reports 0 for anything it cannot decode, and HEVC 4:4:4 in Matroska --
+       what the high-fidelity preset writes -- is exactly that case. Without a
+       duration there is no window to draw. */
+    let dur = await probeDuration(viewURL(name), true);
+    if (!dur) dur = Number(d.duration) || 0;
+    slot.dur = dur; slot.start = 0; slot.end = dur;
+    slot.audio = true;
+    /* Assigned unconditionally, including to nothing: a blank probe must clear
+       a previous file's label rather than leave it standing over the new one. */
+    slot.chroma = d.chroma || "";
+    slot.codec = d.codec || "";
+    /* start/end left at the full range on purpose: the render pass snaps an
+       untouched continuation clip to its last 22 frames. */
+    return d;
+  }
+
+  async function adoptLastRender(slot, card, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "\u2026"; }
+    try {
+      const r = await api.fetchApi("/cglide/recent_outputs?limit=1");
+      if (r.status !== 200) throw new Error(`recent_outputs ${r.status}`);
+      const list = await r.json();
+      if (!Array.isArray(list) || !list.length) {
+        /* Nothing rendered yet, or the outputs went somewhere else. Say so
+           rather than failing mutely. */
+        console.warn("[H3 Studio] no video found in the output folder");
+        flashWrong(card);
+        return;
+      }
+      await adoptInto(slot, { ...list[0], type: "output" });
+      render(); commit();
+    } catch (err) {
+      console.error("[H3 Studio] could not adopt the last render:", err);
+      flashWrong(card);
+    } finally {
+      if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "last render"; }
+    }
   }
 
   function wireDrop(node_, slot, kind, accept, token) {
@@ -1394,6 +1557,21 @@ function buildUI(node) {
     const hB = el("div", "gcast-h b"); hB.tabIndex = 0; hB.title = "Trim end";
     const used = el("div", "gcast-used");
     track.append(wave, span, used, head, hA, hB);
+    /* Chroma sits ON the waveform, at the left, because that is where the eye
+     * already is when judging the window. Green for 4:4:4 and 4:2:2, which
+     * both anchored cleanly in testing; amber-red for 4:2:0, which made Glide
+     * Join report a frame correction on every run. */
+    if (slot.chroma) {
+      const weak = slot.chroma === CHROMA_WARN;
+      const chip = el("div", "gcast-chroma" + (weak ? " weak" : ""),
+                      weak ? `${slot.chroma} \u00b7 anchors less exactly` : slot.chroma);
+      chip.title = weak
+        ? `${slot.codec || "source"} ${slot.chroma} \u2014 three quarters of the chroma is `
+          + "thrown away before the model reads the guide, so the continuation "
+          + "anchors less exactly. A 4:2:2 or 4:4:4 source is cleaner."
+        : `${slot.codec || "source"} ${slot.chroma} \u2014 anchors cleanly`;
+      track.append(chip);
+    }
     if (label) track.append(el("div", "gcast-wavlabel", label));
     const times = el("div", "gcast-times");
     const play = el("button", "gcast-play", "\u25B6");
@@ -1694,6 +1872,16 @@ function buildUI(node) {
     }
     cap.append(el("span", "n", caption));
     if (slot.file && token) cap.append(el("span", null, token));
+    if (opts.cont) {
+      /* The step this removes: render, hunt the file down in the output folder,
+         drag it onto the slot. The server does the copy on disk instead. */
+      const bLast = el("button", "gcast-last", "last render");
+      bLast.title = "Take the newest video from the output folder";
+      bLast.addEventListener("pointerenter", () => primeLastRenderTip(bLast));
+      bLast.onclick = (e) => { e.stopPropagation(); adoptLastRender(slot, card, bLast); };
+      if (slot.chroma === CHROMA_WARN) bLast.classList.add("warn");
+      cap.append(el("div", "spacer"), bLast);
+    }
     if (slot.file) {
       const x = el("button", "gcast-x", "×");
       x.title = "Clear slot";
@@ -2840,6 +3028,224 @@ function buildUI(node) {
     commit(); paintShotsBtn(); paintPresetName(); renderShots();
   }
 
+  /* ======================================================== Render all
+   * Queue every clip in the project in order. In "continue" mode each render
+   * is adopted into the next clip's CONTINUE FROM slot, so the graph's own
+   * Glide Join stitches as it goes and the LAST render is the finished piece
+   * -- there is no separate assembly pass to build.
+   *
+   * The loop drives the panel rather than the graph: it switches clips, fills
+   * the slot, commits, queues, waits. Everything it does is something you
+   * could do by hand, which is what makes it safe to interrupt.
+   */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const VIDEO_OUT_RE = /\.(mkv|mp4|m4v|mov|webm|avi|mpg|mpeg|ts|m2ts|wmv|flv|ogv)$/i;
+  let run = null;                 /* null when idle; the run's own state when not */
+  let runBox = null;              /* the overlay, so it can be torn down */
+
+  /* Only 4:2:0 hurts: measured on the same pair, an AV1 yuv420p10le guide made
+     Glide Join report a frame correction every time, while 4:2:2 and 4:4:4
+     reported none. Preset names carry enough to tell without a probe. */
+  function presetSubsampled(name) {
+    return !/4:4:4|prores|ffv1/i.test(name || "");
+  }
+
+  function videoPresetName() {
+    try {
+      const n = (app.graph?.nodes || []).find((x) => x.type === "CSGlideVideoCS");
+      const w = n && (n.widgets || []).find((x) => x.name === "preset");
+      return w ? String(w.value || "") : "";
+    } catch (e) { return ""; }
+  }
+
+  async function queueOnce() {
+    const p = await app.graphToPrompt();
+    const res = await api.queuePrompt(0, p);
+    const id = res && (res.prompt_id || res.promptId);
+    if (!id) throw new Error("the server accepted no prompt id");
+    return id;
+  }
+
+  /* Polling rather than socket events: it survives a dropped websocket, a tab
+     that was backgrounded, and every frontend version. A render is a minute or
+     more, so a second between checks costs nothing. */
+  async function waitForPrompt(id) {
+    for (;;) {
+      if (run && run.cancel) throw new Error("cancelled");
+      await sleep(1200);
+      let entry = null;
+      try {
+        const r = await api.fetchApi(`/history/${id}`);
+        if (r.status === 200) {
+          const h = await r.json();
+          entry = h && h[id];
+        }
+      } catch (e) { /* server busy or restarting: try again */ }
+      if (!entry) continue;
+      const s = entry.status || {};
+      if (s.status_str === "error") throw new Error("the render failed - see the console");
+      if (s.completed || s.status_str === "success") return entry;
+    }
+  }
+
+  /* Glide Video reports ONE entry per render: the browser-playable proxy, as
+     type "temp", with the real file named in a "master" field beside it. So the
+     master never appears as a filename anywhere in the history, and picking
+     "the newest video" can only ever find the proxy. Read master when it is
+     offered; fall back to filename for anything else that writes video. */
+  const PREVIEW_RE = /(^|[._-])preview\.[^.]+$/i;
+
+  function videoFromHistory(entry) {
+    const outs = (entry && entry.outputs) || {};
+    let best = null;
+    let proxy = null;
+    for (const nodeId of Object.keys(outs)) {
+      const bag = outs[nodeId] || {};
+      for (const key of Object.keys(bag)) {
+        const arr = bag[key];
+        if (!Array.isArray(arr)) continue;
+        for (const item of arr) {
+          if (!item) continue;
+          /* The master sits in output/ even when the proxy it came with is a
+             temp file, so the type of the entry does not describe it. */
+          if (typeof item.master === "string" && VIDEO_OUT_RE.test(item.master)) {
+            best = { name: item.master, subfolder: item.subfolder || "", type: "output" };
+            continue;
+          }
+          if (typeof item.filename !== "string") continue;
+          if (!VIDEO_OUT_RE.test(item.filename)) continue;
+          const hit = {
+            name: item.filename,
+            subfolder: item.subfolder || "",
+            type: item.type || "output",
+          };
+          if (PREVIEW_RE.test(item.filename)) proxy = hit; else best = hit;
+        }
+      }
+    }
+    if (!best && proxy) {
+      /* Only a proxy was produced. Better than stopping, but say so - the
+         guide will be subsampled and the join will pay for it. */
+      console.warn("[H3 Studio] Render all: only a preview proxy was found for "
+                 + "this render, chaining from it");
+      return proxy;
+    }
+    return best;
+  }
+
+  function paintRun() {
+    if (!run) {
+      if (runBox) { runBox.remove(); runBox = null; }
+      root.classList.remove("running");
+      paintShotsBtn();
+      return;
+    }
+    if (!runBox) {
+      runBox = el("div", "gcast-run");
+      const card = el("div", "card");
+      card.append(el("div", "ttl", "Rendering the project"));
+      card.append(el("div", "msg"));
+      card.append(el("div", "sub"));
+      const cancel = el("button", "gcast-btn ghost", "Stop");
+      cancel.title = "Finish the clip being rendered, then stop. Clips already done are kept.";
+      cancel.onclick = (e) => {
+        e.stopPropagation();
+        if (run) { run.cancel = true; paintRun(); }
+      };
+      card.append(cancel);
+      runBox.append(card);
+      root.append(runBox);
+      root.classList.add("running");
+    }
+    const p = proj();
+    const name = p.shots[run.i] ? shotLabel(p.shots[run.i], run.i) : `Clip ${run.i + 1}`;
+    runBox.querySelector(".msg").textContent =
+      run.cancel ? `Stopping after ${name}\u2026` : `${name} \u2014 ${run.i + 1} of ${run.total}`;
+    runBox.querySelector(".sub").textContent =
+      run.note || (run.mode === "continue" ? "chained through CONTINUE FROM" : "clips rendered separately");
+    bShots.textContent = `Rendering ${run.i + 1}/${run.total}`;
+  }
+
+  async function renderAll(mode) {
+    if (run) return;
+    const p = proj();
+    if (!p.shots.length) {
+      alert("H3 Studio: this project has no clips yet.");
+      return;
+    }
+    if (mode === "continue" && presetSubsampled(videoPresetName())) {
+      /* Worth stopping for: every link would hand the next clip a 4:2:0 guide,
+         and the whole chain pays for it rather than one join. */
+      const go = confirm(
+        "Glide Video is set to a 4:2:0 preset.\n\n"
+        + "Chained clips are read back as guides, and a subsampled guide anchors "
+        + "the continuation less exactly \u2014 every link in the chain, not just one.\n\n"
+        + "A 4:4:4, ProRes or FFV1 preset is cleaner. Render anyway?");
+      if (!go) return;
+    }
+
+    /* Free undo: the project as it stands goes into the same slot New and Open
+       use, so Revert in the project panel brings it back. */
+    snapProject("before Render all");
+    stash();
+    const startIdx = p.idx;
+    run = { cancel: false, i: 0, total: p.shots.length, mode, note: "", made: [] };
+    paintRun();
+
+    let previous = null;
+    let stopped = false;
+    try {
+      for (let i = 0; i < p.shots.length; i++) {
+        run.i = i; run.note = ""; paintRun();
+        switchTo(i);
+
+        if (i > 0 && mode === "continue") {
+          if (!previous) throw new Error("the previous clip produced no video to continue from");
+          run.note = "taking the tail of the previous render\u2026"; paintRun();
+          await adoptInto(st.cont, previous);
+          render(); commit(); stash();
+        }
+
+        run.note = "queued, waiting for the render\u2026"; paintRun();
+        const id = await queueOnce();
+        const entry = await waitForPrompt(id);
+        const out = videoFromHistory(entry);
+        if (!out) {
+          throw new Error("that render produced no video file \u2014 is Glide Video "
+                        + "(or another video output) connected in the graph?");
+        }
+        previous = out;
+        run.made.push(out.name);
+        console.log(`[H3 Studio] Render all: clip ${i + 1}/${p.shots.length} \u2192 ${out.name}`);
+
+        if (run.cancel) { stopped = true; break; }
+      }
+    } catch (err) {
+      stopped = true;
+      if (String(err && err.message) === "cancelled") {
+        console.log("[H3 Studio] Render all: stopped");
+      } else {
+        console.error("[H3 Studio] Render all stopped:", err);
+        /* Clips already finished stay finished, and the project holds the
+           slots the run filled, so it can be picked up from where it stopped. */
+        alert(`H3 Studio \u2014 Render all stopped at clip ${run.i + 1}:\n\n`
+              + `${err && err.message ? err.message : err}\n\n`
+              + `${run.made.length} clip${run.made.length === 1 ? "" : "s"} finished and kept.`);
+      }
+    } finally {
+      const made = run ? run.made.slice() : [];
+      run = null;
+      paintRun();
+      /* Back to the clip the run started from, so the panel is where it was */
+      if (p.shots[startIdx]) switchTo(startIdx);
+      renderShots();
+      if (!stopped && made.length) {
+        console.log(`[H3 Studio] Render all: done, ${made.length} clip(s), `
+                  + `final file ${made[made.length - 1]}`);
+      }
+    }
+  }
+
   function switchTo(i) {
     const p = proj();
     if (i === p.idx || !p.shots[i]) return;
@@ -3294,6 +3700,28 @@ function buildUI(node) {
     pfoot.append(el("div", "lbl", "Project"), el("div", "spacer"),
                  bPRevert, bPNew, bPSave, bPSaveAs, bPPack, bPOpen);
     shotsPanel.append(pfoot);
+
+    /* Render all sits on its own row: it is the only control here that starts
+       work rather than editing the list, and it should not be a neighbour of
+       Delete. */
+    const rfoot = el("div", "gcast-shots-foot run");
+    const selMode = el("select", "gcast-runmode");
+    [["continue", "chained \u2014 one continuous take"],
+     ["separate", "separate \u2014 no continuation"]].forEach(([v, t]) => {
+      const o = el("option", null, t); o.value = v; selMode.append(o);
+    });
+    selMode.value = node.properties.gcast_run_mode || "continue";
+    selMode.onchange = () => { node.properties.gcast_run_mode = selMode.value; };
+    selMode.onpointerdown = (e) => e.stopPropagation();
+    const bRun = el("button", "gcast-btn run", "Render all");
+    bRun.disabled = !p.shots.length || !!run;
+    bRun.title = p.shots.length
+      ? `Queue all ${p.shots.length} clips in order. Chained mode feeds each render `
+        + "into the next clip's CONTINUE FROM, so the last file is the whole piece."
+      : "Add some clips first";
+    bRun.onclick = (e) => { e.stopPropagation(); closeShots(); renderAll(selMode.value); };
+    rfoot.append(el("div", "lbl", "Render"), el("div", "spacer"), selMode, bRun);
+    shotsPanel.append(rfoot);
   }
 
   bShots.onclick = (e) => {
