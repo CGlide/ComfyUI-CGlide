@@ -9,13 +9,18 @@ continuation onto the clip it continued from.
 I make short films with these. Everything here exists because I needed it, and
 the defaults are what I actually use.
 <p align="center">
-  <a href="https://youtu.be/aEUM6sihSdI">
+<a href="https://youtu.be/aEUM6sihSdI">
 <img width="500" height="750" alt="Capture d&#39;écran 2026-08-17 221233" src="https://github.com/user-attachments/assets/d9984423-f965-470b-80c8-3faebffa079b" />
-  </a>
+</a>
+<br>
+<em>THE RECITATION — a short film made with these nodes</em>
+
 </p align="center">
 ---
 
 ## Install
+
+Search for **CGlide** in ComfyUI Manager, or:
 
 ```
 cd ComfyUI/custom_nodes
@@ -80,6 +85,17 @@ would with the native H3 nodes.
 - **Drag files onto slots.** Or paste — Ctrl+V drops a screenshot straight into
   the slot under your pointer. Type `@` in the prompt and pick a reference to
   drop its tag in.
+- **Several images at once.** The nine image slots take a whole batch, from the
+  picker or from a drop. Drop onto a particular card and the batch fills from
+  that card forward; drop onto the rack and it fills whatever slots are empty
+  and leaves the filled ones alone. A cast usually arrives as a folder, so one
+  file per gesture was the wrong unit.
+- **Drag a picture onto another slot to swap them.** Order comes out of your
+  file manager and it's rarely the order you want. The `@tags` travel with the
+  picture — move `@image1` to slot 3 and the prompt is rewritten to `@image3`,
+  so every sentence you wrote about it still describes it. Hold **Alt** while
+  releasing to move the picture and leave the prompt alone, for when the prompt
+  is already right and it's the pictures that are out of order.
 - **"Sent to the encoder as".** The model sees `Picture 1`, `Picture 2` and so
   on, and the number comes from *which slots are filled*, not from the slot
   number. Leave a gap and your Picture 3 is not the one you think it is. This
@@ -89,9 +105,8 @@ would with the native H3 nodes.
   slide it, done.
 - **Prompt check.** Amber when the soundscape doesn't cover the whole clip, or
   when nothing says what the mouths are doing. Those two are most of the
-  mumbling problems.
-- **Speech budget.** Words against time at your reading pace, so a line that
-  can't fit in the beat shows up before you render it.
+  mumbling problems. The sound chip also counts words against the clip length,
+  so a line that can't fit in the beat shows up before you render it.
 - **Shot timeline.** Type a shot marker and the bar splits. One colour per shot,
   the first words of each shown in the band, and dragging a boundary rewrites
   the timestamp in the prompt. Grey means nothing is scripted there — and
@@ -147,6 +162,34 @@ one in your output folder — the copy is only so you can watch it in the node.
 
 ---
 
+## Continuing from your last render
+
+There are two ways to carry one clip into the next, and they do different jobs.
+
+**As a guide** — the CONTINUE FROM slot. Frame-exact: the model picks up the
+motion and the sound where the last clip left off. For continuing a shot.
+
+**As a look reference** — an ordinary video slot. Same light, same colour, same
+room, but the camera is free to be anywhere. For the next shot in the same
+scene.
+
+Both have a **last render** button that grabs the newest video in your output
+folder, so you're not going to the output folder and dragging files around. The
+copy happens server side, so nothing big goes through your browser. Hover before
+clicking and it tells you which file it's about to take and what it is.
+
+On a reference video slot the button does the look-reference version: sound
+stays off — same room doesn't mean same soundtrack, and an `@videoaudio` tag
+would pull the previous clip's mix into this one — and it scans the clip for the
+window that reads clearest, then writes that window into the trim where you can
+see it and drag it if you disagree. Hold **Alt** to take the whole clip
+untrimmed and place the window yourself.
+
+The window picker is a score, not a promise. If nothing in the clip reads well
+it says so in amber and you pick one yourself.
+
+---
+
 ## Glide Join — extending a clip
 
 H3 gives you a few seconds at a time. This is how you get more.
@@ -194,16 +237,6 @@ Two things worth knowing:
 - Colour drift down a chain is real but small when the window is a true tail. If
   you see a step at the join it's more likely to be motion than colour.
 
-### last render
-
-Small thing but I use it constantly now. There's a `last render` button on the
-CONTINUE FROM slot — click it and your newest render lands in the slot. No going
-to the output folder, no dragging. The copy happens server side so nothing big
-goes through your browser.
-
-Hover it before clicking and it tells you which file it's about to take and what
-it is.
-
 ### The chroma badge — read this one
 
 There's a little badge on the continuation waveform. Green for 4:4:4 and 4:2:2,
@@ -223,6 +256,10 @@ sits between 4:2:0 and 4:2:2, and anything above that is fine.
 So: **don't chain from a 4:2:0 file.** The badge tells you what's in the slot
 before you render.
 
+This is about the **guide** path only. A look reference carries no timing, so
+there's no badge on a reference video slot — the same file that's a bad guide is
+a perfectly good reference.
+
 ---
 
 ## Render all — chaining a whole project
@@ -235,6 +272,10 @@ Open the **Project** panel, pick a mode at the bottom, hit **Render all**:
 - **chained** — each render goes into the next clip's CONTINUE FROM. Glide Join
   stitches as it goes, so the **last file is the whole thing**. There's no
   separate assembly step.
+- **carry look** — each render goes into the next clip's video *reference* slot
+  instead, with the window picked for you. Separate clips, same room. This is
+  the one I use most: it holds a location across a scene without pinning the
+  camera to where the last shot ended.
 - **separate** — same loop, no continuation. Just queues all your clips one
   after another.
 
@@ -247,7 +288,17 @@ If you don't like the result, **Revert** in the Project panel puts the project
 back exactly as it was before the run.
 
 Pick chained with a 4:2:0 preset selected in Glide Video and the node asks you
-first — every link in the chain pays for that, not just one join.
+first — every link in the chain pays for that, not just one join. Carry look
+doesn't ask, because a reference doesn't care.
+
+### Skipping a clip
+
+Each row in the project list has a dot. Click it and that clip drops out of the
+run — the row dims, the dot hollows, and Render all passes over it. The clip
+stays in the project and in the saved file. Click again to bring it back.
+
+This is for when one shot in the middle of a finished sequence needs another
+pass and you don't want to re-render the ten that already work.
 
 Two limits worth saying out loud:
 
@@ -257,8 +308,9 @@ Two limits worth saying out loud:
   on a share preset. You'd be stacking generations *and* handing every link a
   4:2:0 guide.
 - **One mode for the whole project, for now.** Per-link — where each gap between
-  two clips picks its own mode — is what I actually want, and it's coming. This
-  is the simple version first.
+  two clips picks its own mode, so a cut inside a scene and a cut between scenes
+  aren't forced to be the same thing — is what I actually want, and it's coming.
+  This is the simple version first.
 
 ---
 
