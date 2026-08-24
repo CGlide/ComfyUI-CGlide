@@ -142,20 +142,29 @@ function parseInitial(raw) {
 
   const s = (d.slots && typeof d.slots === "object") ? d.slots : {};
   const image = (o) => (o && o.file) ? { file: String(o.file) } : {};
-  const timed = (o, withAudio) => {
+  const timed = (o, withAudio, isVideo) => {
     if (!o || !o.file) return {};
     const r = { file: String(o.file) };
     if (Number.isFinite(+o.start)) r.start = +o.start;
     if (Number.isFinite(+o.end)) r.end = +o.end;
     if (Number.isFinite(+o.dur)) r.dur = +o.dur;
     if (withAudio && o.audio) r.audio = true;
+    if (isVideo) {
+      /* Look-carry keys. `carry` earns the injected job line in the prompt and
+         is read by the Python whitelist; `spanNote`/`spanScore` are UI-only and
+         are dropped there, kept so the amber note survives a reload the same
+         way the chroma label does. */
+      if (o.carry) r.carry = true;
+      if (o.spanNote) r.spanNote = String(o.spanNote);
+      if (Number.isFinite(+o.spanScore)) r.spanScore = +o.spanScore;
+    }
     return r;
   };
 
   out.slots.first = image(s.first);
   out.slots.last = image(s.last);
   for (let i = 0; i < MAX_IMAGES; i++) out.slots.images[i] = image((s.images || [])[i]);
-  for (let i = 0; i < MAX_VIDEOS; i++) out.slots.videos[i] = timed((s.videos || [])[i], true);
+  for (let i = 0; i < MAX_VIDEOS; i++) out.slots.videos[i] = timed((s.videos || [])[i], true, true);
   for (let i = 0; i < MAX_AUDIOS; i++) out.slots.audios[i] = timed((s.audios || [])[i], false);
 
   const c = (d.cont && typeof d.cont === "object") ? d.cont : {};
@@ -512,6 +521,19 @@ const CSS = `
 .gcast-media.drop, .gcast-media .gcast-thumb.drop, .gcast-media .gcast-wav.drop {
   border-color:var(--h3-accent); background:var(--h3-accent-dim);
   box-shadow:inset 0 0 0 1px var(--h3-accent); }
+/* reorder -----------------------------------------------------------
+   Dragging a picture from one image slot onto another. Nothing here sets
+   position, so it is free of the source-order rule that governs the
+   positioned classes further down. */
+.gcast-slot.filled { cursor:grab; }
+.gcast-slot.gcast-src { opacity:.3; }
+.gcast-slot.gcast-tgt { border-color:var(--h3-accent);
+  box-shadow:inset 0 0 0 2px var(--h3-accent), 0 2px 6px rgba(0,0,0,.45); }
+.gcast-slot.gcast-tgt .gcast-thumb { background:var(--h3-accent-dim); }
+/* A picture is natively draggable: a press-and-move on the <img> starts an
+   HTML5 drag that steals the pointer stream in the middle of our own. */
+.gcast-thumb img { -webkit-user-drag:none; }
+.gcast-slot { user-select:none; }
 .gcast-thumb { width:100%; aspect-ratio:1/1; display:flex; align-items:center; justify-content:center;
   background:var(--h3-well); }
 .gcast-grid.fl .gcast-thumb, .gcast-grid.fl3 .gcast-thumb { aspect-ratio:16/9; }
@@ -535,6 +557,13 @@ const CSS = `
   padding:1px 5px; border-radius:3px; cursor:help; white-space:nowrap;
   background:#0b0b0bcc; border:1px solid #3f7d4f; color:#6fe08a; }
 .gcast-chroma.weak { border-color:#b5502a; color:#ff8a5c; }
+/* The span picker's verdict, sitting opposite the chroma chip so the two never
+   collide: chroma is about the guide path, this is about the look-carry path. */
+.gcast-spannote { position:absolute; right:5px; top:5px; z-index:3; pointer-events:auto;
+                  font:600 9px/1.5 ui-monospace,monospace; letter-spacing:.02em;
+                  padding:1px 5px; border-radius:3px; background:#171310;
+                  border:1px solid #3a3a3a; color:#9a9a9a; }
+.gcast-spannote.weak { border-color:#b5502a; color:#ff8a5c; }
 
 /* The run overlay covers the panel on purpose: while a run owns the node,
    editing a clip that is about to be queued would silently change what gets
@@ -738,6 +767,13 @@ const CSS = `
   color:var(--h3-txt); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .gcast-bar .name .dirty { color:var(--h3-dim); }
 .gcast-bar .name .shot { color:#c9aeff; }
+/* The clip's own name, and the project it belongs to. Both are one glance
+   answers to "where am I" that otherwise cost opening the project panel. The
+   project sits dimmer than the clip: it changes far less often, so it should
+   read as context rather than compete with the clip name. */
+.gcast-bar .name .shotname { color:#c9aeff; }
+.gcast-bar .name .projname { color:var(--h3-dim); }
+.gcast-bar .name .sep { color:#4a4a4a; padding:0 2px; }
 .gcast-bar .spacer { margin-left:auto; }
 .gcast-btn { all:unset; pointer-events:auto; cursor:pointer; padding:4px 10px; border-radius:6px;
   border:1px solid var(--h3-line); background:var(--h3-panel);
@@ -752,6 +788,15 @@ const CSS = `
    the two weight families. */
 .gcast-btn.shots { background:#2a2340; border-color:#584a78; color:#c9aeff; }
 .gcast-btn.shots:hover { border-color:#a97bff; color:#e4d6ff; }
+/* all:unset on .gcast-btn leaves display:inline, so the glyph and the label
+   need a flex box of their own to sit on one baseline. Left padding comes in
+   2px to keep the button the same width it was. */
+.gcast-btn.shots { display:inline-flex; align-items:center; gap:6px; padding-left:8px; }
+.gcast-btn.shots .lbl { line-height:1; }
+/* A step brighter than the label: this is the one button in the bar that opens
+   a whole film rather than acting on the clip on screen. */
+.gcast-btn.shots .ico { color:#d3b8ff; flex:0 0 auto; pointer-events:none; transition:.13s; }
+.gcast-btn.shots:hover .ico { color:#efe6ff; }
 .gcast-shots {
   --h3-raise:#2b2b2b; --h3-line:#3b3b3b; --h3-well:#131313; --h3-panel:#212121;
   --h3-txt:#e3e3e3; --h3-dim:#979797; --h3-violet:#a97bff;
@@ -789,6 +834,16 @@ const CSS = `
   color:var(--h3-dim); font-size:9px; }
 .gcast-shot .ctl button:hover { background:#ffffff14; color:var(--h3-txt); }
 .gcast-shot .ctl button.rm:hover { background:#ff7a7a1a; color:#ff7a7a; }
+/* The skip toggle sits outside .ctl and stays visible without hover: a disabled
+   clip has to be readable at a glance while scanning the list, not discovered
+   by pointing at it. */
+.gcast-shot .skip { all:unset; pointer-events:auto; cursor:pointer; flex:0 0 auto;
+                    width:18px; height:18px; border-radius:4px; text-align:center;
+                    font:12px/18px ui-monospace,monospace; color:#5c5c5c; }
+.gcast-shot .skip:hover { background:#ffffff14; color:var(--h3-txt); }
+.gcast-shot.off .th, .gcast-shot.off .mid { opacity:.34; }
+.gcast-shot.off .nm { text-decoration:line-through; }
+.gcast-shot.off .skip { color:#7a6a3a; }
 .gcast-shots-foot { display:flex; align-items:center; gap:5px; flex-wrap:wrap;
   padding-top:8px; margin-top:8px; border-top:1px solid var(--h3-line); }
 .gcast-shots-foot.proj { border-top:none; padding-top:5px; margin-top:0; }
@@ -1007,6 +1062,11 @@ function makeSelect(node, titleAttr) {
   };
 }
 
+/* User text going into innerHTML. Clip and project names are typed by hand, so
+   an angle bracket in one would otherwise take the bar apart. */
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 const el = (tag, cls, txt) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -1046,12 +1106,34 @@ function pickFile(accept, multiple) {
   });
 }
 
-function probeDuration(url, isVideo) {
+function probeDuration(url, isVideo, timeoutMs) {
+  /* Timed out on purpose. A container the browser cannot even begin to parse --
+     HEVC 4:4:4 in Matroska is the one that does it here -- fires NEITHER
+     loadedmetadata NOR error on some builds: the element simply sits there and
+     the promise never settles. Awaited inside a Render all loop that is what a
+     hung run looks like, with no error anywhere to explain it.
+
+     Zero is already the "browser could not read it" answer every caller handles
+     by falling back to the server's duration, so a timeout just reaches that
+     answer instead of waiting forever. */
   return new Promise((resolve) => {
     const m = document.createElement(isVideo ? "video" : "audio");
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { m.removeAttribute("src"); m.load(); } catch (e) { /* nothing to release */ }
+      resolve(v);
+    };
+    const timer = setTimeout(() => {
+      console.warn("[H3 Studio] probeDuration timed out on", url,
+                   "\u2014 falling back to the server's reading");
+      finish(0);
+    }, Number.isFinite(+timeoutMs) ? +timeoutMs : 8000);
     m.preload = "metadata";
-    m.onloadedmetadata = () => resolve(Number.isFinite(m.duration) ? m.duration : 0);
-    m.onerror = () => resolve(0);
+    m.onloadedmetadata = () => finish(Number.isFinite(m.duration) ? m.duration : 0);
+    m.onerror = () => finish(0);
     m.src = url;
   });
 }
@@ -1076,7 +1158,22 @@ function buildUI(node) {
   const bSaveAs = el("button", "gcast-btn ghost", "Save as\u2026");
   const bPack = el("button", "gcast-btn ghost", "Save packed");
   const bLoad = el("button", "gcast-btn ghost", "Load");
-  const bShots = el("button", "gcast-btn shots", "Project");
+  const bShots = el("button", "gcast-btn shots");
+  /* A cine camera rather than a folder or a list glyph: the button opens the
+     FILM, not a file browser. Drawn for 14px — solid body and lens so the
+     silhouette survives, one open reel for the film-camera read, and the small
+     reel FILLED on purpose: a second ring at this size turns to mush and looks
+     like a rendering fault rather than a choice. */
+  bShots.innerHTML =
+      '<svg class="ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">'
+    + '<circle cx="5" cy="7.5" r="2.1" fill="currentColor"/>'
+    + '<circle cx="12.4" cy="6.1" r="3.5" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+    + '<rect x="2" y="10.9" width="13.6" height="9.4" rx="2.2" fill="currentColor"/>'
+    + '<path d="M17.2 13.5 22 10.6 22 20.4 17.2 17.5Z" fill="currentColor"/>'
+    + '</svg><span class="lbl">Project</span>';
+  /* Every later write goes to the LABEL, never to the button: setting
+     textContent on the button itself would take the glyph with it. */
+  const bShotsLbl = bShots.querySelector(".lbl");
   bSave.title = "Write back over the file you last saved or opened";
   bSaveAs.title = "Choose a location. JSON, media referenced by filename";
   bPack.title = "Choose a location. Zip with the media inside \u2014 portable";
@@ -1234,6 +1331,197 @@ function buildUI(node) {
     setTimeout(() => node_.classList.remove("gcast-reject"), 320);
   }
 
+  /* ---- several pictures at once ---------------------------------------
+   * The rack holds nine and a cast usually arrives as a folder, so one file
+   * per gesture was the wrong unit. The picker and a drop both fill a RUN of
+   * slots now.
+   *
+   * Where the run starts depends on where it landed. Released on a card it
+   * fills from that card forward, overwriting -- the card you aimed at is
+   * where you meant the batch to begin. Released on the rack or on plain
+   * panel with no card under the pointer, it fills the EMPTY slots and leaves
+   * the filled ones alone.
+   *
+   * Order is whatever the file manager handed over, which is often not the
+   * order you want. That is what the reorder drag below is for.
+   */
+  async function fillImages(files, startIdx) {
+    const bank = st.slots.images;
+    const list = Array.from(files).filter((f) => (fileKind(f) || "image") === "image");
+    if (!list.length) return 0;
+
+    const targets = [];
+    if (startIdx != null) {
+      for (let i = startIdx; i < bank.length && targets.length < list.length; i++) targets.push(i);
+    } else {
+      for (let i = 0; i < bank.length && targets.length < list.length; i++) {
+        if (!bank[i].file) targets.push(i);
+      }
+    }
+    if (!targets.length) { flashPanel(); return 0; }
+
+    let n = 0;
+    for (let i = 0; i < targets.length; i++) {
+      try {
+        const name = await uploadFile(list[i]);
+        const slot = bank[targets[i]];
+        clearSlot(slot);
+        slot.file = name;
+        n++;
+        render();        /* they land one at a time, which is the progress bar */
+      } catch (err) {
+        console.error("[H3 Studio] upload failed for", list[i]?.name, err);
+        break;
+      }
+    }
+    commit();
+    if (n < list.length) {
+      /* More files than room, or an upload died. Say which rather than
+         swallowing the rest silently. */
+      console.warn(`[H3 Studio] ${list.length - n} image(s) not placed \u2014 the rack holds ${bank.length}`);
+      flashPanel();
+    }
+    return n;
+  }
+
+  /* A loose drop of several files. Images go in as a batch; a clip or a sound
+     still goes one at a time, since those racks are three deep and there is no
+     folder-of-nine case to serve there. */
+  async function routeFiles(files, fallbackKind) {
+    const imgs = [], rest = [];
+    for (const f of Array.from(files)) {
+      const k = fileKind(f) || fallbackKind;
+      if (k === "image") imgs.push(f);
+      else if (k === "video" || k === "audio") rest.push([k, f]);
+    }
+    let n = 0;
+    if (imgs.length) n += await fillImages(imgs, null);
+    for (const [k, f] of rest) { if (await routeToFreeSlot(k, f)) n++; }
+    return n;
+  }
+
+  /* ---- reorder ---------------------------------------------------------
+   * Drag a picture onto another image slot to swap the two.
+   *
+   * Pointer-based, NOT HTML5 drag. The panel deliberately swallows file drags
+   * whole so a near-miss can be routed instead of escaping to the graph, and a
+   * native drag started inside it would race that handler for the same events.
+   * This follows the trim handle's pattern instead: capture on the card, move
+   * and up on document in the CAPTURE phase, because LiteGraph eats the move
+   * stream otherwise.
+   */
+  let lastDragEnd = 0;
+
+  function ghostFor(slot, card) {
+    const r = card.getBoundingClientRect();
+    const accent = getComputedStyle(root).getPropertyValue("--h3-accent").trim() || "#4f8cd6";
+    const g = el("div");
+    /* Inline, not a class: it lives on document.body like the @ popup, where
+       it would no longer inherit the panel's CSS variables. */
+    g.style.cssText = "position:fixed; z-index:9999; pointer-events:none;"
+      + `width:${Math.max(48, Math.round(r.width))}px;`
+      + "transform:translate(-50%,-50%); border-radius:7px; overflow:hidden;"
+      + `opacity:.9; border:1px solid ${accent}; box-shadow:0 10px 28px rgba(0,0,0,.65);`;
+    const img = el("img");
+    img.src = viewURL(slot.file);
+    img.draggable = false;
+    img.style.cssText = "width:100%; aspect-ratio:1/1; object-fit:cover; display:block;";
+    g.append(img);
+    document.body.append(g);
+    return g;
+  }
+
+  /* The prompt names SLOTS, not pictures. Move a picture and leave the tokens
+     where they are and every sentence written about it now describes whatever
+     took its place -- so the tokens travel WITH the picture and the prompt goes
+     on meaning what it meant. Hold Alt to move the picture alone, which is the
+     other case: the prompt is already right and the pictures are out of order. */
+  function swapPromptTokens(i, j) {
+    const a = `@image${i + 1}`, b = `@image${j + 1}`;
+    const p = st.prompt || "";
+    if (!tokenRe(a).test(p) && !tokenRe(b).test(p)) return;
+    const HOLD = "\u0000gcast\u0000";
+    const out = p.replace(tokenRe(a), HOLD).replace(tokenRe(b), a).split(HOLD).join(b);
+    st.prompt = out;
+    const scroll = ta.scrollTop;      /* assigning .value can reset it */
+    ta.value = out;
+    ta.scrollTop = scroll;
+  }
+
+  function swapImages(i, j, keepTokens) {
+    const bank = st.slots.images;
+    const a = bank[i], b = bank[j];
+    if (!a || !b || a === b) return;
+    /* Contents, not the array entries. The slot OBJECTS are held elsewhere --
+       element datasets, the media cache's weak keys -- so moving the objects
+       themselves would leave those references pointing at the wrong card. */
+    const tmp = { ...a };
+    clearSlot(a); Object.assign(a, b);
+    clearSlot(b); Object.assign(b, tmp);
+    if (!keepTokens) swapPromptTokens(i, j);
+    render(); commit();
+  }
+
+  function wireImageReorder(card, idx) {
+    card.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest(".gcast-x")) return;      /* the clear button */
+      const slot = st.slots.images[idx];
+      if (!slot || !slot.file) return;               /* an empty slot carries nothing */
+      const x0 = e.clientX, y0 = e.clientY;
+      let moved = false, ghost = null, over = null;
+
+      const mark = (c) => {
+        if (over === c) return;
+        if (over) over.classList.remove("gcast-tgt");
+        over = c;
+        if (over) over.classList.add("gcast-tgt");
+      };
+
+      const onMove = (ev) => {
+        if (!moved) {
+          /* A few pixels of slack, so a plain click still opens the picker */
+          if (Math.abs(ev.clientX - x0) < 5 && Math.abs(ev.clientY - y0) < 5) return;
+          moved = true;
+          card.classList.add("gcast-src");
+          ghost = ghostFor(slot, card);
+          document.body.style.cursor = "grabbing";
+        }
+        ghost.style.left = ev.clientX + "px";
+        ghost.style.top = ev.clientY + "px";
+        /* the ghost is pointer-events:none, so it is never what is found here */
+        const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+        const c = hit && hit.closest ? hit.closest("[data-img-index]") : null;
+        mark(c && c !== card && root.contains(c) ? c : null);
+      };
+
+      const finish = (ev) => {
+        document.removeEventListener("pointermove", onMove, true);
+        document.removeEventListener("pointerup", finish, true);
+        document.removeEventListener("pointercancel", finish, true);
+        try { card.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+        document.body.style.cursor = "";
+        if (ghost) ghost.remove();
+        card.classList.remove("gcast-src");
+        const target = over;
+        if (target) target.classList.remove("gcast-tgt");
+        if (!moved) return;                  /* it was a click after all */
+        /* It was a drag, and the click that follows a pointerup would open the
+           file picker on the card just released. Stamped rather than flagged so
+           nothing depends on a timer beating the click. */
+        lastDragEnd = Date.now();
+        if (!target || ev.type !== "pointerup") return;   /* cancelled: no swap */
+        const to = Number(target.dataset.imgIndex);
+        if (Number.isInteger(to)) swapImages(idx, to, ev.altKey);
+      };
+
+      document.addEventListener("pointermove", onMove, true);
+      document.addEventListener("pointerup", finish, true);
+      document.addEventListener("pointercancel", finish, true);
+      try { card.setPointerCapture(e.pointerId); } catch (_) { /* still works without */ }
+    });
+  }
+
   async function assign(slot, file, kind, token) {
     const name = await uploadFile(file);
     clearSlot(slot);
@@ -1292,10 +1580,19 @@ function buildUI(node) {
   const CHROMA_WARN = "4:2:0";
   let hoverProbe = null;
 
-  function describeSource(info) {
-    if (!info || !info.name) return "Take the newest video from the output folder";
+  const CARRY_TIP = "Take the newest render as a look reference \u2014 sound off, "
+                  + "trimmed to the clearest window. Hold Alt for the whole clip.";
+
+  function describeSource(info, forReference) {
+    if (!info || !info.name) {
+      return forReference ? CARRY_TIP : "Take the newest video from the output folder";
+    }
     const what = [info.codec, info.chroma].filter(Boolean).join(" ");
-    const head = what ? `${info.name} — ${what}` : info.name;
+    const head = what ? `${info.name} \u2014 ${what}` : info.name;
+    /* The 4:2:0 finding was about the GUIDE path -- a subsampled anchor made
+       Glide Join report a frame correction every run. A reference carries no
+       timing, so the same file is fine here and the warning would be noise. */
+    if (forReference) return head + "\n\n" + CARRY_TIP;
     if (info.chroma === CHROMA_WARN) {
       return head + "\n\nSubsampled guide: the continuation anchors less exactly "
                   + "and the join needs a frame correction. 4:2:2 or better is cleaner.";
@@ -1303,21 +1600,22 @@ function buildUI(node) {
     return head;
   }
 
-  function primeLastRenderTip(btn) {
+  function primeLastRenderTip(btn, forReference) {
     /* one request per hover, and the answer is reused for the next one */
-    if (hoverProbe) { hoverProbe.then((i) => { btn.title = describeSource(i); }); return; }
+    if (hoverProbe) { hoverProbe.then((i) => { btn.title = describeSource(i, forReference); }); return; }
     hoverProbe = api.fetchApi("/cglide/recent_outputs?limit=1&probe=1")
       .then((r) => (r.status === 200 ? r.json() : []))
       .then((list) => (Array.isArray(list) && list.length ? list[0] : null))
       .catch(() => null);
-    hoverProbe.then((i) => { btn.title = describeSource(i); });
+    hoverProbe.then((i) => { btn.title = describeSource(i, forReference); });
     /* the newest output changes as soon as anything renders */
     setTimeout(() => { hoverProbe = null; }, 15000);
   }
 
   /* Adopt one NAMED output. Shared by the button and by the run loop, which
      needs a specific file rather than whatever happens to be newest. */
-  async function adoptInto(slot, pick) {
+  async function adoptInto(slot, pick, opts) {
+    opts = opts || {};
     const a = await api.fetchApi("/cglide/adopt_output", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1337,14 +1635,93 @@ function buildUI(node) {
     let dur = await probeDuration(viewURL(name), true);
     if (!dur) dur = Number(d.duration) || 0;
     slot.dur = dur; slot.start = 0; slot.end = dur;
-    slot.audio = true;
+    /* A look carry takes the picture only. Leaving the soundtrack on would
+       mint an @videoaudio tag and pull the previous clip's mix into the
+       conditioning of the next one, which is not what "same room" means. */
+    slot.audio = !opts.silent;
     /* Assigned unconditionally, including to nothing: a blank probe must clear
-       a previous file's label rather than leave it standing over the new one. */
-    slot.chroma = d.chroma || "";
-    slot.codec = d.codec || "";
+       a previous file's label rather than leave it standing over the new one.
+       Skipped for a REFERENCE: the 4:2:0 chip speaks about anchoring exactly,
+       which is the guide path's problem. On a look reference it is a warning
+       about something that cannot happen. */
+    slot.chroma = opts.reference ? "" : (d.chroma || "");
+    slot.codec = opts.reference ? "" : (d.codec || "");
     /* start/end left at the full range on purpose: the render pass snaps an
        untouched continuation clip to its last 22 frames. */
     return d;
+  }
+
+  /* Ask the server which window of this clip best SHOWS the scene, and write it
+   * into the slot's own trim. Deliberately not computed in the browser: the pick
+   * has to be the same one the build would make, and it is already in Python.
+   *
+   * Writing start/end rather than leaving a flag for the node means the window
+   * you see is the window that renders - the same principle as Render all
+   * driving the panel instead of the graph.
+   */
+  async function applySmartSpan(slot) {
+    delete slot.spanNote; delete slot.spanScore;
+    try {
+      const r = await api.fetchApi("/cglide/pick_span?file="
+                                   + encodeURIComponent(slot.file || ""));
+      if (r.status !== 200) throw new Error(`pick_span ${r.status}`);
+      const d = await r.json();
+      if (!d || !d.ok) {
+        /* Nothing legible anywhere, or PyAV could not read it. The full-range
+           trim it was adopted with is left standing. */
+        slot.spanNote = "weak";
+        return null;
+      }
+      slot.start = +d.start; slot.end = +d.end;
+      slot.spanNote = d.note || "";
+      slot.spanScore = +d.score;
+      return d;
+    } catch (err) {
+      console.warn("[H3 Studio] smart span pick failed:", err);
+      return null;
+    }
+  }
+
+  /* The hand version of Render all's carry mode: take the newest render as a
+   * look REFERENCE rather than a guide -- sound off (an @videoaudio tag would
+   * otherwise pull the previous clip's mix into this one's conditioning), and
+   * trimmed to the window the picker thinks reads best.
+   *
+   * Alt takes the whole clip untrimmed, for when you want to place the window
+   * by hand. Worth having on its own, without a project: one shot continued
+   * from the last one is the common case, and it did not need a run loop.
+   */
+  async function carryLastRender(slot, card, btn, raw) {
+    if (btn) { btn.disabled = true; btn.textContent = "\u2026"; }
+    try {
+      const r = await api.fetchApi("/cglide/recent_outputs?limit=1");
+      if (r.status !== 200) throw new Error(`recent_outputs ${r.status}`);
+      const list = await r.json();
+      if (!Array.isArray(list) || !list.length) {
+        console.warn("[H3 Studio] no video found in the output folder");
+        flashWrong(card);
+        return;
+      }
+      await adoptInto(slot, { ...list[0], type: "output" },
+                      { silent: true, reference: true });
+      slot.carry = true;          /* earns the injected job line at emit */
+      if (!raw) {
+        const got = await applySmartSpan(slot);
+        if (got) {
+          console.log(`[H3 Studio] carry window ${got.start.toFixed(2)}s..`
+                    + `${got.end.toFixed(2)}s (${got.frames}f, score ${got.score})`
+                    + (got.note ? ` \u2014 ${got.note}` : ""));
+        }
+      }
+      render(); commit();
+    } catch (err) {
+      console.error("[H3 Studio] could not carry the last render:", err);
+      flashWrong(card);
+    } finally {
+      /* render() has rebuilt the card by now, so this only fires on the paths
+         that returned early -- which is exactly when the button still exists. */
+      if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = "last render"; }
+    }
   }
 
   async function adoptLastRender(slot, card, btn) {
@@ -1370,9 +1747,22 @@ function buildUI(node) {
     }
   }
 
-  function wireDrop(node_, slot, kind, accept, token) {
+  function wireDrop(node_, slot, kind, accept, token, imgIndex) {
+    /* Only the nine-image rack takes a batch: the keyframe pair is two slots
+       with different jobs, and picking several files into it means nothing. */
+    const multi = imgIndex != null;
     node_.addEventListener("click", async (e) => {
       if (e.target.closest(".gcast-x, .gcast-track, .gcast-chk, .gcast-times, .gcast-quick")) return;
+      /* A press that turned into a reorder drag ends with a click on the card.
+         Ignoring it is what stops the picker opening every time a picture moves. */
+      if (Date.now() - lastDragEnd < 300) return;
+      if (multi) {
+        const list = await pickFile(accept, true);
+        if (!list || !list.length) return;
+        if (list.length === 1) await assign(slot, list[0], kind, token);
+        else await fillImages(list, imgIndex);
+        return;
+      }
       const f = await pickFile(accept);
       if (f) await assign(slot, f, kind, token);
     });
@@ -1400,9 +1790,13 @@ function buildUI(node) {
       const k = dragKind(e);
       if (k === null) return;
       e.preventDefault(); e.stopPropagation(); node_.classList.remove("drop");
-      const f = e.dataTransfer?.files?.[0];
+      const files = Array.from(e.dataTransfer?.files || []);
+      const f = files[0];
       if (!f) return;
       if (fileKind(f) && fileKind(f) !== kind) { flashWrong(node_); return; }
+      /* Several pictures released on one card fill from THAT card forward --
+         the slot you aimed at is where the batch begins. */
+      if (multi && files.length > 1) { await fillImages(files, imgIndex); return; }
       await assign(slot, f, kind, token);
     });
   }
@@ -1412,6 +1806,7 @@ function buildUI(node) {
     const thumb = el("div", "gcast-thumb");
     if (slot.file) {
       const img = el("img"); img.src = viewURL(slot.file); img.loading = "lazy";
+      img.draggable = false;          /* see .gcast-thumb img in the sheet */
       thumb.append(img);
     } else thumb.append(el("div", "gcast-empty", "+"));
     const cap = el("div", "gcast-cap");
@@ -1571,6 +1966,21 @@ function buildUI(node) {
           + "anchors less exactly. A 4:2:2 or 4:4:4 source is cleaner."
         : `${slot.codec || "source"} ${slot.chroma} \u2014 anchors cleanly`;
       track.append(chip);
+    }
+    /* What the smart pick thought of the window it chose. Amber on "weak" for
+       the same reason 4:2:0 is amber: the render will go ahead and be worse,
+       and there is nothing in the finished file to say why. */
+    if (slot.spanNote !== undefined && slot.spanNote !== null && slot.spanNote !== "") {
+      const weak = slot.spanNote === "weak";
+      const note = el("div", "gcast-spannote" + (weak ? " weak" : ""),
+                      weak ? "weak span" : slot.spanNote);
+      note.title = weak
+        ? "Nothing in this clip reads clearly \u2014 the best window found is "
+          + "dark, flat or blurred. It will still carry colour and grade, but "
+          + "little else. Trim it by hand, or carry from a different clip."
+        : `${slot.spanNote} \u2014 the segment this window sits in is short, so `
+          + "there was not much to choose from.";
+      track.append(note);
     }
     if (label) track.append(el("div", "gcast-wavlabel", label));
     const times = el("div", "gcast-times");
@@ -1881,6 +2291,14 @@ function buildUI(node) {
       bLast.onclick = (e) => { e.stopPropagation(); adoptLastRender(slot, card, bLast); };
       if (slot.chroma === CHROMA_WARN) bLast.classList.add("warn");
       cap.append(el("div", "spacer"), bLast);
+    } else if (kind === "video") {
+      /* Same button, reference behaviour. No chroma warn class: that finding
+         belongs to the guide path, and this slot carries no timing. */
+      const bLast = el("button", "gcast-last", "last render");
+      bLast.title = CARRY_TIP;
+      bLast.addEventListener("pointerenter", () => primeLastRenderTip(bLast, true));
+      bLast.onclick = (e) => { e.stopPropagation(); carryLastRender(slot, card, bLast, e.altKey); };
+      cap.append(el("div", "spacer"), bLast);
     }
     if (slot.file) {
       const x = el("button", "gcast-x", "×");
@@ -2043,7 +2461,14 @@ function buildUI(node) {
     if (!isFL) {
       st.slots.images.forEach((slot, i) => {
         const card = imageSlot(slot, String(i + 1), `@image${i + 1}`);
-        wireDrop(card, slot, "image", ACCEPT_IMAGE, `@image${i + 1}`);
+        /* The reorder drag hit-tests on this attribute and reads its
+           destination straight off it, so it is the whole wiring. */
+        card.dataset.imgIndex = String(i);
+        wireDrop(card, slot, "image", ACCEPT_IMAGE, `@image${i + 1}`, i);
+        wireImageReorder(card, i);
+        card.title = slot.file
+          ? "Drag onto another slot to swap \u2014 hold Alt to move the picture and leave the @tags alone"
+          : "Click or drop \u2014 several pictures at once fill from here";
         imgGrid.append(card);
       });
       st.slots.videos.forEach((slot, i) => vidGrid.append(mediaSlot(slot, "video", `video ${i + 1}`, `@video${i + 1}`, usedSeconds)));
@@ -2848,11 +3273,18 @@ function buildUI(node) {
      * With a project open that is easy to forget, so the bar names the shot
      * those buttons would write. */
     const p = (node.properties && node.properties.gcast_project) || null;
-    const shot = (p && Array.isArray(p.shots) && p.idx >= 0 && p.shots[p.idx])
-      ? `<span class="shot">clip ${p.idx + 1}/${p.shots.length}</span>` : "";
+    const cur = (p && Array.isArray(p.shots) && p.idx >= 0) ? p.shots[p.idx] : null;
+    let shot = "";
+    if (cur) {
+      shot = ` <span class="shot">clip ${p.idx + 1}/${p.shots.length}</span>`;
+      const nm = (cur.name || "").trim();
+      if (nm) shot += ` <span class="sep">\u00b7</span><span class="shotname">${esc(nm)}</span>`;
+      const pn = (p.name || "").trim();
+      if (pn) shot += ` <span class="sep">\u00b7</span><span class="projname">${esc(pn)}</span>`;
+    }
     nameLabel.innerHTML = (fileLabel
       ? `${badge} ${fileLabel}`
-      : `${badge} <span class="dirty">unsaved</span>`) + (shot ? " " + shot : "");
+      : `${badge} <span class="dirty">unsaved</span>`) + shot;
   }
 
   /* ---- shots: several shots in one project --------------------------
@@ -2993,7 +3425,7 @@ function buildUI(node) {
 
   function paintShotsBtn() {
     const p = proj();
-    bShots.textContent = p.shots.length
+    bShotsLbl.textContent = p.shots.length
       ? `Project ${p.idx >= 0 ? p.idx + 1 : "-"}/${p.shots.length}`
       : "Project";
   }
@@ -3146,11 +3578,25 @@ function buildUI(node) {
       card.append(el("div", "ttl", "Rendering the project"));
       card.append(el("div", "msg"));
       card.append(el("div", "sub"));
-      const cancel = el("button", "gcast-btn ghost", "Stop");
-      cancel.title = "Finish the clip being rendered, then stop. Clips already done are kept.";
+      const cancel = el("button", "gcast-btn ghost stopbtn", "Stop");
       cancel.onclick = (e) => {
         e.stopPropagation();
-        if (run) { run.cancel = true; paintRun(); }
+        if (!run) return;
+        if (!run.cancel) {
+          /* Graceful: let the clip on the sampler finish, then stop. */
+          run.cancel = true;
+        } else {
+          /* Second press: give up on whatever the loop is waiting for. Needed
+             because Stop is cooperative -- the loop only checks the flag between
+             clips, so a wait that never settles can never be reached. The
+             pending promise is left to resolve into nothing; what matters is
+             that the loop and the panel come back. */
+          run.force = true;
+          const waiters = run.waiters || [];
+          run.waiters = [];
+          waiters.forEach((rej) => { try { rej(new Error("cancelled")); } catch (e) {} });
+        }
+        paintRun();
       };
       card.append(cancel);
       runBox.append(card);
@@ -3160,10 +3606,21 @@ function buildUI(node) {
     const p = proj();
     const name = p.shots[run.i] ? shotLabel(p.shots[run.i], run.i) : `Clip ${run.i + 1}`;
     runBox.querySelector(".msg").textContent =
-      run.cancel ? `Stopping after ${name}\u2026` : `${name} \u2014 ${run.i + 1} of ${run.total}`;
+      run.cancel ? `Stopping after ${name}\u2026` : `${name} \u2014 ${run.k + 1} of ${run.total}`;
+    const stopBtn = runBox.querySelector(".stopbtn");
+    if (stopBtn) {
+      stopBtn.textContent = run.cancel ? "Stop now" : "Stop";
+      stopBtn.title = run.cancel
+        ? "Still waiting. Press again to abandon what this clip is waiting for and "
+          + "return to the panel. Clips already finished are kept."
+        : "Finish the clip being rendered, then stop. Clips already done are kept.";
+    }
     runBox.querySelector(".sub").textContent =
-      run.note || (run.mode === "continue" ? "chained through CONTINUE FROM" : "clips rendered separately");
-    bShots.textContent = `Rendering ${run.i + 1}/${run.total}`;
+      run.note || ((run.mode === "continue" ? "chained through CONTINUE FROM"
+                  : run.mode === "carry" ? "look carried through video slot 1"
+                  : "clips rendered separately")
+                 + (run.skipped ? `, ${run.skipped} skipped` : ""));
+    bShotsLbl.textContent = `Rendering ${run.k + 1}/${run.total}`;
   }
 
   async function renderAll(mode) {
@@ -3173,6 +3630,18 @@ function buildUI(node) {
       alert("H3 Studio: this project has no clips yet.");
       return;
     }
+    /* The queue, not the list. Everything downstream counts in queue positions:
+       the chain and carry steps ask "is this the first clip being rendered",
+       which is not the same question as "is this clip 1" once anything is
+       skipped. */
+    const queue = p.shots.map((_, i) => i).filter((i) => !p.shots[i].off);
+    if (!queue.length) {
+      alert("H3 Studio: every clip in this project is skipped.");
+      return;
+    }
+    /* Only the guide path cares about chroma: a look carry is a reference, and
+       a reference carries no timing, so the -2 correspondence finding does not
+       apply to it. No prompt in carry mode. */
     if (mode === "continue" && presetSubsampled(videoPresetName())) {
       /* Worth stopping for: every link would hand the next clip a 4:2:0 guide,
          and the whole chain pays for it rather than one join. */
@@ -3189,26 +3658,57 @@ function buildUI(node) {
     snapProject("before Render all");
     stash();
     const startIdx = p.idx;
-    run = { cancel: false, i: 0, total: p.shots.length, mode, note: "", made: [] };
+    run = { cancel: false, force: false, waiters: [], i: queue[0], k: 0,
+            total: queue.length, skipped: p.shots.length - queue.length,
+            mode, note: "", made: [] };
     paintRun();
+
+    /* Every long await in the loop goes through here, so a second Stop press has
+       something to interrupt. Without it the only cancellation point is between
+       clips, and anything that stalls mid-clip strands the whole panel. */
+    const raceCancel = (promise) => Promise.race([
+      promise,
+      new Promise((_, rej) => { if (run) run.waiters.push(rej); }),
+    ]);
 
     let previous = null;
     let stopped = false;
     try {
-      for (let i = 0; i < p.shots.length; i++) {
-        run.i = i; run.note = ""; paintRun();
+      for (let k = 0; k < queue.length; k++) {
+        const i = queue[k];
+        run.i = i; run.k = k; run.note = ""; paintRun();
         switchTo(i);
 
-        if (i > 0 && mode === "continue") {
+        if (k > 0 && mode === "continue") {
           if (!previous) throw new Error("the previous clip produced no video to continue from");
           run.note = "taking the tail of the previous render\u2026"; paintRun();
-          await adoptInto(st.cont, previous);
+          await raceCancel(adoptInto(st.cont, previous));
+          render(); commit(); stash();
+        }
+
+        if (k > 0 && mode === "carry") {
+          if (!previous) throw new Error("the previous clip produced no video to carry the look from");
+          /* Video slot 1 by convention, and cleared first: carrying into a slot
+             that already holds a hand-picked reference would silently throw it
+             away, so the slot is the mode's to own for the run. */
+          run.note = "carrying the look from the previous render\u2026"; paintRun();
+          const slot = st.slots.videos[0];
+          await raceCancel(adoptInto(slot, previous, { silent: true, reference: true }));
+          slot.carry = true;
+          run.note = "choosing the clearest window\u2026"; paintRun();
+          const got = await raceCancel(applySmartSpan(slot));
+          if (got) {
+            console.log(`[H3 Studio] Render all: carry window `
+                      + `${got.start.toFixed(2)}s..${got.end.toFixed(2)}s `
+                      + `(${got.frames}f, score ${got.score})`
+                      + (got.note ? ` \u2014 ${got.note}` : ""));
+          }
           render(); commit(); stash();
         }
 
         run.note = "queued, waiting for the render\u2026"; paintRun();
-        const id = await queueOnce();
-        const entry = await waitForPrompt(id);
+        const id = await raceCancel(queueOnce());
+        const entry = await raceCancel(waitForPrompt(id));
         const out = videoFromHistory(entry);
         if (!out) {
           throw new Error("that render produced no video file \u2014 is Glide Video "
@@ -3216,7 +3716,8 @@ function buildUI(node) {
         }
         previous = out;
         run.made.push(out.name);
-        console.log(`[H3 Studio] Render all: clip ${i + 1}/${p.shots.length} \u2192 ${out.name}`);
+        console.log(`[H3 Studio] Render all: clip ${i + 1} `
+                  + `(${k + 1}/${queue.length}) \u2192 ${out.name}`);
 
         if (run.cancel) { stopped = true; break; }
       }
@@ -3234,6 +3735,7 @@ function buildUI(node) {
       }
     } finally {
       const made = run ? run.made.slice() : [];
+      if (run) run.waiters = [];
       run = null;
       paintRun();
       /* Back to the clip the run started from, so the panel is where it was */
@@ -3508,6 +4010,9 @@ function buildUI(node) {
       p.shots = d.shots.map((s) => ({
         id: (s && s.id) ? String(s.id) : uid(),
         name: (s && typeof s.name === "string") ? s.name : "",
+        /* Skipped state travels with the project - reopening a file and finding
+           every clip re-enabled would silently re-queue work you had set aside. */
+        off: !!(s && s.off),
         state: parseInitial(JSON.stringify((s && s.state) || {})),
       }));
       if (remap) {
@@ -3595,7 +4100,8 @@ function buildUI(node) {
         "No clips yet. \u201cAdd clip\u201d keeps what is on screen as Clip 1 and starts Clip 2 from its references."));
     }
     p.shots.forEach((s, i) => {
-      const row = el("div", "gcast-shot" + (i === p.idx ? " on" : ""));
+      const row = el("div", "gcast-shot" + (i === p.idx ? " on" : "")
+                                          + (s.off ? " off" : ""));
 
       const th = el("div", "th");
       const f = shotThumb(s.state);
@@ -3631,6 +4137,19 @@ function buildUI(node) {
       mid.append(nameEl, el("div", "meta",
         `${s.state.mode === "fl2va" ? "FL" : "REF"}  ${s.state.width}\u00d7${s.state.height}  ${dur}`));
 
+      /* Skip, not delete. Deleting a clip to keep it out of one run throws away
+         a prompt that took work to get right; this keeps it in the project and
+         out of the queue. */
+      const skip = el("button", "skip", s.off ? "\u25CB" : "\u25CF");
+      skip.title = s.off
+        ? "Skipped \u2014 Render all will pass over this clip. Click to include it."
+        : "Included in Render all. Click to skip it.";
+      skip.onclick = (e) => {
+        e.stopPropagation();
+        s.off = !s.off;
+        commit(); renderShots();
+      };
+
       const ctl = el("div", "ctl");
       const up = el("button", null, "\u25B2"); up.title = "Move up";
       const dn = el("button", null, "\u25BC"); dn.title = "Move down";
@@ -3640,7 +4159,7 @@ function buildUI(node) {
       rm.onclick = (e) => { e.stopPropagation(); delShot(i); };
       ctl.append(up, dn, rm);
 
-      row.append(th, mid, ctl);
+      row.append(th, mid, skip, ctl);
       row.onclick = () => switchTo(i);
       if (i === shotsFocus) row.dataset.focus = "1";
       list.append(row);
@@ -3707,6 +4226,7 @@ function buildUI(node) {
     const rfoot = el("div", "gcast-shots-foot run");
     const selMode = el("select", "gcast-runmode");
     [["continue", "chained \u2014 one continuous take"],
+     ["carry", "carry look \u2014 separate clips, same room"],
      ["separate", "separate \u2014 no continuation"]].forEach(([v, t]) => {
       const o = el("option", null, t); o.value = v; selMode.append(o);
     });
@@ -3717,7 +4237,9 @@ function buildUI(node) {
     bRun.disabled = !p.shots.length || !!run;
     bRun.title = p.shots.length
       ? `Queue all ${p.shots.length} clips in order. Chained mode feeds each render `
-        + "into the next clip's CONTINUE FROM, so the last file is the whole piece."
+        + "into the next clip's CONTINUE FROM, so the last file is the whole piece. "
+        + "Carry look keeps the clips separate but hands each one the clearest "
+        + "window of the render before it, as a reference."
       : "Add some clips first";
     bRun.onclick = (e) => { e.stopPropagation(); closeShots(); renderAll(selMode.value); };
     rfoot.append(el("div", "lbl", "Render"), el("div", "spacer"), selMode, bRun);
@@ -4132,12 +4654,11 @@ function buildUI(node) {
     const onSlot = e.target.closest("[data-kind]");
     disarm();
     if (onSlot) return;                            /* the slot handled it */
-    const f = e.dataTransfer?.files?.[0];
-    const kind = f && (fileKind(f) || k);
-    if (!f || !kind) return;
-    /* awaited: routeToFreeSlot is async, so the un-awaited call returned a
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (!files.length) return;
+    /* awaited: routeFiles is async, so the un-awaited call returned a
        Promise and the "no rack took it" flash could never fire */
-    const routed = await routeToFreeSlot(kind, f);
+    const routed = await routeFiles(files, k);
     if (!routed) flashPanel();
   });
 

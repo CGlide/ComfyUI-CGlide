@@ -9,6 +9,7 @@ the real <Picture i> / <Video k> / <Audio j> presentation, renumbered against th
 slots that are actually filled.
 """
 
+import asyncio
 import json
 import math
 import os
@@ -51,6 +52,12 @@ ASSET_SUBFOLDER = "cglide"
 LEGACY_ASSET_SUBFOLDERS = ("whatdreamscost",)
 
 MIN_REF_FRAMES = 5          # H3 rejects a reference video shorter than this
+
+# Candidate lengths for the smart span picker. Only 5 / 22 / 39 / 56 are worth
+# offering: _refs() trims every reference video with `while n %% 17 != 5`, so a
+# 17f pick silently collapses to 5 and a 27f pick collapses to 22. Anything not
+# on that grid is a longer decode for the same conditioning.
+SPAN_LADDER = (22, 39)
 MAX_IMAGES = 9
 MAX_VIDEOS = 3
 MAX_AUDIOS = 3
@@ -285,6 +292,142 @@ def _load_video_tail(ref, n, start_hint=0.0):
     return torch.from_numpy(arr)
 
 
+def _scan_video(path, short_edge=112, max_frames=4096):
+    """Cheap per-frame stats for the whole clip: exposure, detail, motion.
+
+    Decoded small and grey through libav's own scaler, and never held - only
+    three scalars per frame survive, so a 300 frame clip costs a few kB and a
+    fraction of a second. Everything the picker decides is decided from here.
+    """
+    if av is None:
+        raise RuntimeError("H3 Studio: PyAV is required to read reference videos.")
+
+    times, luma, detail, diff = [], [], [], []
+    prev = None
+    with av.open(path) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        tb = float(stream.time_base) if stream.time_base else 1.0 / FPS
+        for frame in container.decode(video=0):
+            t = float(frame.pts * tb) if frame.pts is not None else (len(luma) / FPS)
+            w = max(4, int(round(frame.width * short_edge / max(1, frame.height))))
+            g = frame.reformat(width=w, height=short_edge,
+                               format="gray").to_ndarray().astype(np.float32) / 255.0
+            times.append(t)
+            luma.append(float(g.mean()))
+            # 4-neighbour Laplacian variance - high on real texture and edges,
+            # near zero on flat fog, a blown frame or a motion-blurred smear
+            lap = (g[1:-1, 2:] + g[1:-1, :-2] + g[2:, 1:-1] + g[:-2, 1:-1]
+                   - 4.0 * g[1:-1, 1:-1])
+            detail.append(float(lap.var()))
+            diff.append(0.0 if prev is None else float(np.abs(g - prev).mean()))
+            prev = g
+            if len(luma) >= max_frames:
+                break
+
+    if not luma:
+        raise ValueError("H3 Studio: no frames decoded from %s." % path)
+    return (np.asarray(times, dtype=np.float64), np.asarray(luma, dtype=np.float32),
+            np.asarray(detail, dtype=np.float32), np.asarray(diff, dtype=np.float32))
+
+
+def _cut_segments(diff, n_total):
+    """Split the clip at hard cuts. Returns [(start, end), ...] index ranges.
+
+    A window straddling a cut hands H3 two different framings as one reference,
+    and because a confused reference falls back to the image slots, the look
+    carry is lost with nothing in the log to say why. Cheap to avoid: a cut is
+    a frame-to-frame difference far above the clip's own median.
+    """
+    body = diff[1:]
+    med = float(np.median(body)) if body.size else 0.0
+    thresh = max(0.05, med * 6.0)
+    bounds = [0] + [i for i in range(1, n_total) if diff[i] > thresh] + [n_total]
+    segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)
+            if bounds[i + 1] - bounds[i] >= MIN_REF_FRAMES]
+    return (segs or [(0, n_total)]), thresh
+
+
+def pick_reference_span(ref, ladder=SPAN_LADDER, prefer_tail=True):
+    """Choose the span of a previous render that best SHOWS the scene.
+
+    This is a reference, not a guide: it carries no timing, so unlike the
+    CONTINUE FROM window it need not sit at the tail and need not be adjacent
+    in time to anything. What it has to be is legible - correctly exposed, with
+    real detail in it, and not spanning a cut.
+
+    Returns {start, end, frames, score, note} in seconds, or None to leave the
+    slot's own trim alone.
+    """
+    path = _resolve_asset(ref)
+    if path is None:
+        return None
+    try:
+        times, luma, detail, diff = _scan_video(path)
+    except Exception as exc:
+        print("[H3 Studio] span pick: could not scan %s (%s) - keeping the trim." % (ref, exc))
+        return None
+
+    n_total = len(luma)
+    if n_total < MIN_REF_FRAMES:
+        return None
+
+    segments, thresh = _cut_segments(diff, n_total)
+    detail_ref = float(np.percentile(detail, 90)) or 1.0
+
+    # prefix sums so every candidate window is three subtractions
+    cs_l = np.concatenate(([0.0], np.cumsum(luma, dtype=np.float64)))
+    cs_d = np.concatenate(([0.0], np.cumsum(detail, dtype=np.float64)))
+    cs_v = np.concatenate(([0.0], np.cumsum(diff, dtype=np.float64)))
+    mean = lambda cs, s, e: (cs[e] - cs[s]) / max(1, e - s)
+
+    best = None
+    for si, (a, b) in enumerate(segments):
+        is_last = (si == len(segments) - 1)
+        for want in ladder:
+            if b - a < want:
+                continue
+            for s in range(a, b - want + 1):
+                e = s + want
+                ml = mean(cs_l, s, e)
+                if ml < 0.06 or ml > 0.94:          # black or blown - no information
+                    continue
+                expo = 1.0 - min(1.0, abs(ml - 0.45) / 0.45)
+                det = min(1.0, mean(cs_d, s, e) / detail_ref)
+                stab = 1.0 - min(1.0, mean(cs_v, s + 1, e) / thresh)
+                score = 0.40 * det + 0.35 * expo + 0.25 * stab
+                if want > ladder[0]:
+                    score *= 1.03                   # ties go to the cheaper span
+                if prefer_tail and is_last:
+                    score *= 1.12                   # a preference, not a rule
+                if best is None or score > best["score"]:
+                    best = {"score": score, "s": s, "e": e, "want": want,
+                            "seg": (a, b), "si": si + 1, "nseg": len(segments)}
+
+    if best is None:
+        print("[H3 Studio] span pick: nothing legible in %s - keeping the trim." % ref)
+        return None
+
+    s, want = best["s"], best["want"]
+    start = float(times[s])
+    end = start + (want - 1) / float(FPS)
+    seg_len = best["seg"][1] - best["seg"][0]
+
+    note = ""
+    if best["score"] < 0.35:
+        note = "weak"
+    elif seg_len < 30:
+        note = "short segment (%df)" % seg_len
+
+    print("[H3 Studio] span pick: %s -> %.2fs..%.2fs (%df, score %.2f, "
+          "segment %d/%d)%s"
+          % (ref, start, end, want, best["score"], best["si"], best["nseg"],
+             (" - " + note) if note else ""))
+
+    return {"start": start, "end": end, "frames": want,
+            "score": best["score"], "note": note}
+
+
 def _load_audio(ref, start, end):
     """Returns a ComfyUI AUDIO dict, trimmed to [start, end)."""
     path = _resolve_asset(ref)
@@ -349,6 +492,33 @@ def _slot_list(raw, count):
     return out
 
 
+def _video_slot_list(raw):
+    """Video slots, whitelisted the same way `cont` is.
+
+    `carry` and `pick` are the batch-mode keys: carry means this slot holds the
+    previous render as a LOOK reference (and earns the injected job line), pick
+    means let pick_reference_span() choose the window instead of the UI trim.
+    They are independent - a hand-trimmed carry slot is a legitimate thing.
+    """
+    out = []
+    src = raw if isinstance(raw, list) else []
+    for i in range(MAX_VIDEOS):
+        item = src[i] if i < len(src) and isinstance(src[i], dict) else {}
+        if not item.get("file"):
+            out.append(None)
+            continue
+        end = item.get("end")
+        out.append({
+            "file": str(item["file"]),
+            "start": float(item.get("start") or 0.0),
+            "end": float(end) if end not in (None, "") else None,
+            "audio": bool(item.get("audio")),
+            "carry": bool(item.get("carry")),
+            "pick": bool(item.get("pick")),
+        })
+    return out
+
+
 def parse_h3_data(raw):
     """Whitelisted parse — anything not listed here is dropped on purpose."""
     try:
@@ -400,10 +570,36 @@ def parse_h3_data(raw):
         "first": one("first"),
         "last": one("last"),
         "images": _slot_list(slots.get("images"), MAX_IMAGES),
-        "videos": _slot_list(slots.get("videos"), MAX_VIDEOS),
+        "videos": _video_slot_list(slots.get("videos")),
         "audios": _slot_list(slots.get("audios"), MAX_AUDIOS),
         "cont": cont,
     }
+
+
+CARRY_NOTE = ("@video%d gives the state of the scene at this point in the film: "
+              "follow its lighting, atmosphere, colour grade and set dressing. "
+              "Do not follow its camera movement or its action.")
+
+
+def inject_carry_note(cfg):
+    """Prepend the job line for any slot the batch mode filled as a look carry.
+
+    Injected as an @token so the normal tag machinery renumbers it against the
+    filled slots - writing <Video k> here would go stale the moment a slot above
+    it emptied. A slot already mentioned by hand is left alone: the prompt wins
+    over the mode.
+    """
+    prompt = cfg["prompt"]
+    lines = []
+    for n, slot in enumerate(cfg["videos"], start=1):
+        if slot is None or not slot.get("carry"):
+            continue
+        if ("@video%d" % n) in prompt:
+            continue
+        lines.append(CARRY_NOTE % n)
+    if not lines:
+        return prompt
+    return "\n".join(lines) + "\n\n" + prompt
 
 
 def build_tag_map(cfg, has_first, has_last):
@@ -472,6 +668,69 @@ def transcribe_prompt(prompt, tags, known_tokens):
 # --------------------------------------------------------------------------
 # Node
 # --------------------------------------------------------------------------
+
+_SPAN_CACHE = {}
+
+
+def pick_reference_span_cached(ref, ladder=SPAN_LADDER, prefer_tail=True):
+    """pick_reference_span keyed on path + mtime + size.
+
+    The UI asks for a pick when the slot is filled and the node asks again at
+    build time; without this the clip is scanned twice for the same answer.
+    Keyed on the file's own identity, so a re-render to the same name still
+    rescans.
+    """
+    path = _resolve_asset(ref)
+    if path is None:
+        return None
+    try:
+        stat = os.stat(path)
+        key = (path, int(stat.st_mtime), int(stat.st_size), tuple(ladder), bool(prefer_tail))
+    except Exception:
+        return pick_reference_span(ref, ladder, prefer_tail)
+    if key in _SPAN_CACHE:
+        return _SPAN_CACHE[key]
+    got = pick_reference_span(ref, ladder, prefer_tail)
+    if len(_SPAN_CACHE) > 64:
+        _SPAN_CACHE.clear()
+    _SPAN_CACHE[key] = got
+    return got
+
+
+# The UI needs the same answer the build will use, so the pick lives here rather
+# than being re-implemented in the browser. Registered defensively: if the server
+# module moves, the node still loads and the picker still runs at build time.
+try:
+    from aiohttp import web as _web
+    from server import PromptServer as _PromptServer
+
+    @_PromptServer.instance.routes.get("/cglide/pick_span")
+    async def _pick_span(request):
+        ref = request.rel_url.query.get("file") or ""
+        if not ref:
+            return _web.json_response({"error": "no file"}, status=400)
+        try:
+            # PyAV decoding is blocking, and this handler runs ON ComfyUI's own
+            # event loop - scanning inline would freeze the server, the progress
+            # websocket included, for as long as the decode takes. On a long clip
+            # that is indistinguishable from a hung render.
+            loop = asyncio.get_running_loop()
+            got = await loop.run_in_executor(None, pick_reference_span_cached, ref)
+        except Exception as exc:
+            return _web.json_response({"error": str(exc)}, status=500)
+        if got is None:
+            return _web.json_response({"ok": False})
+        return _web.json_response({
+            "ok": True,
+            "start": round(float(got["start"]), 4),
+            "end": round(float(got["end"]), 4),
+            "frames": int(got["frames"]),
+            "score": round(float(got["score"]), 3),
+            "note": got["note"],
+        })
+except Exception as _exc:  # pragma: no cover
+    print("[H3 Studio] /cglide/pick_span not registered (%s)" % _exc)
+
 
 class CSGlideCast:
     @classmethod
@@ -544,6 +803,10 @@ class CSGlideCast:
             start = float(slot.get("start") or 0.0)
             end = slot.get("end")
             end = float(end) if end not in (None, "") else None
+            if slot.get("pick"):
+                picked = pick_reference_span_cached(slot["file"])
+                if picked is not None:
+                    start, end = picked["start"], picked["end"]
             frames = _load_video_frames(slot["file"], start, end, frame_count)
 
             vh, vw = frames.shape[1], frames.shape[2]
@@ -746,7 +1009,7 @@ class CSGlideCast:
                  + [f"@videoaudio{i}" for i in range(1, MAX_VIDEOS + 1)]
                  + [f"@audio{i}" for i in range(1, MAX_AUDIOS + 1)])
         tags, presentation = build_tag_map(cfg, False, False)
-        prompt = transcribe_prompt(cfg["prompt"], tags, known)
+        prompt = transcribe_prompt(inject_carry_note(cfg), tags, known)
 
         ref_items, ref_blocks = self._refs(cfg, vae, audio_vae, width, height, frame_count)
         if presentation:
