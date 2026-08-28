@@ -10,12 +10,24 @@ I make short films with these. Everything here exists because I needed it, and
 the defaults are what I actually use.
 <p align="center">
 <a href="https://youtu.be/aEUM6sihSdI">
+<img width="577" height="878" alt="Capture d&#39;écran 2026-08-28 193208" src="https://github.com/user-attachments/assets/cc83e51e-dca5-414f-919d-4ec7e09b3a00" />
+
+</a>
+<br>
+<em>THE RECITATION — a short film made with these nodes</em>
+
+</p align="center">
+
+
+<p align="center">
+<a href="https://youtu.be/aEUM6sihSdI">
 <img width="500" height="750" alt="Capture d&#39;écran 2026-08-17 221233" src="https://github.com/user-attachments/assets/d9984423-f965-470b-80c8-3faebffa079b" />
 </a>
 <br>
 <em>THE RECITATION — a short film made with these nodes</em>
 
 </p align="center">
+
 ---
 
 ## Install

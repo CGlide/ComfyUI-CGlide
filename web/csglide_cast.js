@@ -582,6 +582,7 @@ const CSS = `
 .gcast-shots-foot.run .lbl { color:var(--h3-accent); }
 .gcast-runmode { background:#191919; color:#ccc; border:1px solid #333; border-radius:4px;
   font-size:10px; padding:2px 4px; font-family:inherit; }
+.gcast-shots-foot.run .gcast-chk { font-size:10px; gap:4px; }
 .gcast-btn.run { border-color:var(--h3-accent); color:var(--h3-accent); }
 .gcast-btn.run:hover:not([disabled]) { background:#ff9f4318; }
 .gcast-x { all:unset; pointer-events:auto; cursor:pointer; margin-left:auto; color:var(--h3-dim); padding:0 3px;
@@ -619,6 +620,11 @@ const CSS = `
 .gcast-wavlabel { position:absolute; inset:0; display:flex; align-items:flex-start;
   justify-content:center; padding-top:2px; font-size:10.5px; color:var(--h3-dim);
   pointer-events:none; text-shadow:0 1px 4px #000, 0 0 10px #000; letter-spacing:.02em; }
+.gcast-wavlabel span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  max-width:100%; }
+/* Only when a corner chip is actually present \u2014 otherwise the name gets the
+   full width, which most video slots have. */
+.gcast-wavlabel.inset { padding-left:74px; padding-right:74px; }
 .gcast-span { position:absolute; top:0; bottom:0; background:var(--gc-wave);
   opacity:.13; pointer-events:none; }
 .gcast-track.slidable { cursor:grab; }
@@ -1956,7 +1962,9 @@ function buildUI(node) {
      * already is when judging the window. Green for 4:4:4 and 4:2:2, which
      * both anchored cleanly in testing; amber-red for 4:2:0, which made Glide
      * Join report a frame correction on every run. */
+    let cornered = false;   // a chip is occupying one of the top corners
     if (slot.chroma) {
+      cornered = true;
       const weak = slot.chroma === CHROMA_WARN;
       const chip = el("div", "gcast-chroma" + (weak ? " weak" : ""),
                       weak ? `${slot.chroma} \u00b7 anchors less exactly` : slot.chroma);
@@ -1971,6 +1979,7 @@ function buildUI(node) {
        the same reason 4:2:0 is amber: the render will go ahead and be worse,
        and there is nothing in the finished file to say why. */
     if (slot.spanNote !== undefined && slot.spanNote !== null && slot.spanNote !== "") {
+      cornered = true;
       const weak = slot.spanNote === "weak";
       const note = el("div", "gcast-spannote" + (weak ? " weak" : ""),
                       weak ? "weak span" : slot.spanNote);
@@ -1982,7 +1991,11 @@ function buildUI(node) {
           + "there was not much to choose from.";
       track.append(note);
     }
-    if (label) track.append(el("div", "gcast-wavlabel", label));
+    if (label) {
+      const lb = el("div", "gcast-wavlabel" + (cornered ? " inset" : ""));
+      lb.append(el("span", null, label));
+      track.append(lb);
+    }
     const times = el("div", "gcast-times");
     const play = el("button", "gcast-play", "\u25B6");
     play.title = "Play the trimmed range";
@@ -2335,7 +2348,11 @@ function buildUI(node) {
     card.append(cap);
     if (body) card.append(body);
     if (slot.file && slot.dur) {
-      const label = (kind === "audio") ? slot.file.split("/").pop() : null;
+      /* Video carries its filename on the waveform too. The card shows a
+         thumbnail, which says what the clip looks like but not which file
+         it is \u2014 and with a project full of MiniMax_H3_00xxx renders that is
+         the part you need. */
+      const label = slot.file.split("/").pop();
       card.append(trim(slot, usedSeconds, kind === "video", media, label,
                        !!opts.tailOnly));
     }
@@ -3616,15 +3633,27 @@ function buildUI(node) {
         : "Finish the clip being rendered, then stop. Clips already done are kept.";
     }
     runBox.querySelector(".sub").textContent =
-      run.note || ((run.mode === "continue" ? "chained through CONTINUE FROM"
-                  : run.mode === "carry" ? "look carried through video slot 1"
+      run.note || ((run.mode === "continue"
+                    ? ("chained through CONTINUE FROM"
+                       + (run.look ? " + look through video slot 1" : ""))
+                  : run.look ? "look carried through video slot 1"
                   : "clips rendered separately")
                  + (run.skipped ? `, ${run.skipped} skipped` : ""));
     bShotsLbl.textContent = `Rendering ${run.k + 1}/${run.total}`;
   }
 
-  async function renderAll(mode) {
+  async function renderAll(mode, alsoLook) {
     if (run) return;
+    /* Chain and look are orthogonal. Chaining is the guide: frame-accurate at
+       the seam, and nothing after it. A look carry is an ordinary video
+       reference: no timing at all, but it holds grade and identity across the
+       whole clip. Over a 12s continuation the guide's hold fades and the look
+       drifts, so the two together is a real combination. "carry" is the look
+       bit on its own; "continue" can now take it as well. */
+    let look = !!alsoLook;
+    /* Legacy: "carry" was separate+look before the two were split apart. A
+       project saved then can still reach here through gcast_run_mode. */
+    if (mode === "carry") { mode = "separate"; look = true; }
     const p = proj();
     if (!p.shots.length) {
       alert("H3 Studio: this project has no clips yet.");
@@ -3660,7 +3689,7 @@ function buildUI(node) {
     const startIdx = p.idx;
     run = { cancel: false, force: false, waiters: [], i: queue[0], k: 0,
             total: queue.length, skipped: p.shots.length - queue.length,
-            mode, note: "", made: [] };
+            mode, look, note: "", made: [] };
     paintRun();
 
     /* Every long await in the loop goes through here, so a second Stop press has
@@ -3686,7 +3715,7 @@ function buildUI(node) {
           render(); commit(); stash();
         }
 
-        if (k > 0 && mode === "carry") {
+        if (k > 0 && look) {
           if (!previous) throw new Error("the previous clip produced no video to carry the look from");
           /* Video slot 1 by convention, and cleared first: carrying into a slot
              that already holds a hand-picked reference would silently throw it
@@ -4225,24 +4254,71 @@ function buildUI(node) {
        Delete. */
     const rfoot = el("div", "gcast-shots-foot run");
     const selMode = el("select", "gcast-runmode");
+    /* Two modes, not three: "carry look" was never a peer of "chained", it was
+       separate-plus-look all along. The link and the look are independent
+       bits, so the look is the checkbox and the dropdown only picks whether
+       there is a guide at the seam. */
     [["continue", "chained \u2014 one continuous take"],
-     ["carry", "carry look \u2014 separate clips, same room"],
-     ["separate", "separate \u2014 no continuation"]].forEach(([v, t]) => {
+     ["separate", "separate clips"]].forEach(([v, t]) => {
       const o = el("option", null, t); o.value = v; selMode.append(o);
     });
+    /* The look bit is remembered per mode, because the right default is not
+       the same on both sides. Chained already has the guide holding the seam
+       frame by frame; a reference of the same clip laid on top of that
+       competes with it rather than helping, so it is off there. On separate
+       clips the reference is the only link there is, so it is on. */
+    const LOOK_KEY = { continue: "gcast_run_look_continue",
+                       separate: "gcast_run_look_separate" };
+    const LOOK_DEF = { continue: false, separate: true };
+    const keyOf = (m) => LOOK_KEY[m] || LOOK_KEY.continue;
+    const lookOf = (m) => {
+      const v = node.properties[keyOf(m)];
+      return v === undefined ? !!LOOK_DEF[m] : !!v;
+    };
+    const setLook = (m, on) => { node.properties[keyOf(m)] = !!on; };
+    /* Legacy: a project saved before the split holds "carry", which the select
+       would silently drop to its first option \u2014 a carry-look run would come
+       back chained. Map it across and write the pair back. */
+    if (node.properties.gcast_run_mode === "carry") {
+      node.properties.gcast_run_mode = "separate";
+      node.properties[LOOK_KEY.separate] = true;
+    }
     selMode.value = node.properties.gcast_run_mode || "continue";
-    selMode.onchange = () => { node.properties.gcast_run_mode = selMode.value; };
+    selMode.onchange = () => { node.properties.gcast_run_mode = selMode.value;
+                              paintLook(); };
     selMode.onpointerdown = (e) => e.stopPropagation();
+    /* The look bit. Under chained it rides alongside the guide; on its own it
+       is what carry look used to be. */
+    const labLook = el("label", "gcast-chk");
+    const cbLook = el("input"); cbLook.type = "checkbox";
+    cbLook.onchange = () => setLook(selMode.value, cbLook.checked);
+    labLook.append(cbLook, el("span", null, "+ look"));
+    labLook.onpointerdown = (e) => e.stopPropagation();
+    const paintLook = () => {
+      cbLook.disabled = !!run;
+      cbLook.checked = lookOf(selMode.value);
+      labLook.title = selMode.value === "continue"
+        ? "Hand each clip the clearest window of the previous render as an "
+          + "ordinary video reference as well as the guide. Off by default: the "
+          + "guide already holds the seam frame by frame, and a reference of the "
+          + "same clip on top of it competes rather than helps. Uses video slot 1."
+        : "Hand each clip the clearest window of the previous render as a video "
+          + "reference \u2014 separate takes that stay in the same room. This is "
+          + "what carry look was. Uses video slot 1.";
+    };
+    paintLook();
     const bRun = el("button", "gcast-btn run", "Render all");
     bRun.disabled = !p.shots.length || !!run;
     bRun.title = p.shots.length
-      ? `Queue all ${p.shots.length} clips in order. Chained mode feeds each render `
+      ? `Queue all ${p.shots.length} clips in order. Chained feeds each render `
         + "into the next clip's CONTINUE FROM, so the last file is the whole piece. "
-        + "Carry look keeps the clips separate but hands each one the clearest "
-        + "window of the render before it, as a reference."
+        + "Separate renders each clip on its own. Either one can also carry the "
+        + "look forward \u2014 see the checkbox."
       : "Add some clips first";
-    bRun.onclick = (e) => { e.stopPropagation(); closeShots(); renderAll(selMode.value); };
-    rfoot.append(el("div", "lbl", "Render"), el("div", "spacer"), selMode, bRun);
+    bRun.onclick = (e) => { e.stopPropagation(); closeShots();
+                            renderAll(selMode.value, cbLook.checked); };
+    rfoot.append(el("div", "lbl", "Render"), el("div", "spacer"), selMode,
+                 labLook, bRun);
     shotsPanel.append(rfoot);
   }
 
