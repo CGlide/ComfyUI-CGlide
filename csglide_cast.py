@@ -753,9 +753,9 @@ class CSGlideCast:
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT",
-                    "STRING", "IMAGE")
+                    "STRING", "IMAGE", "STRING")
     RETURN_NAMES = ("positive", "latent", "width", "height", "length", "seconds",
-                    "overlap_frames", "source_video", "guide_frames")
+                    "overlap_frames", "source_video", "guide_frames", "prompt")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -949,7 +949,7 @@ class CSGlideCast:
     def build(self, clip, vae, h3_data, audio_vae=None, first_frame=None, last_frame=None):
         cfg = parse_h3_data(h3_data)
 
-        def finish(cond):
+        def finish(cond, prompt):
             """Shared tail for both modes: attach the continuation, if any."""
             guide, overlap, guide_frames = self._continuation(
                 cfg, vae, audio_vae, latent, width, height, frame_count)
@@ -966,7 +966,7 @@ class CSGlideCast:
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
             return (cond, latent, width, height, frame_count, seconds, overlap,
-                    source, guide_frames)
+                    source, guide_frames, prompt)
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
@@ -1001,7 +1001,7 @@ class CSGlideCast:
                     "minimax_keyframes": keyframes,
                     "minimax_frame_count": frame_count,
                 })
-            return finish(cond)
+            return finish(cond, prompt)
 
         # ---- ref2va ----
         known = ([f"@image{i}" for i in range(1, MAX_IMAGES + 1)]
@@ -1019,7 +1019,7 @@ class CSGlideCast:
         cond = clip.encode_from_tokens_scheduled(tokens)
         if ref_blocks:
             cond = node_helpers.conditioning_set_values(cond, {"minimax_refs": ref_blocks})
-        return finish(cond)
+        return finish(cond, prompt)
 
     @classmethod
     def IS_CHANGED(cls, h3_data, **kwargs):
