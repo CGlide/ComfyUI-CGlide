@@ -810,18 +810,27 @@ const CSS = `
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   position:fixed; z-index:80; width:336px; box-sizing:border-box;
   background:var(--h3-raise); border:1px solid var(--h3-line); border-radius:10px;
-  padding:8px; box-shadow:0 14px 34px #000c; color:var(--h3-txt); font-size:11.5px; }
+  padding:8px; box-shadow:0 14px 34px #000c; color:var(--h3-txt); font-size:11.5px;
+  /* A column so the head and the three footer rows stay put and the list is
+     the only thing that gives. placeShots() writes a max-height from the room
+     actually on screen, so on a short display a twenty clip project still
+     ends on its Render all row instead of running off the bottom. */
+  display:flex; flex-direction:column; max-height:calc(100vh - 16px); }
 .gcast-shots[data-mode="fl2va"] { --h3-accent:#59c14f; --h3-accent-dim:#59c14f26; }
 .gcast-shots input { background:var(--h3-well); color:var(--h3-txt); box-sizing:border-box;
   border:1px solid var(--h3-line); border-radius:5px; padding:4px 7px; width:100%;
   font-family:inherit; font-size:11.5px; outline:none; }
 .gcast-shots input:focus { border-color:var(--h3-violet); }
-.gcast-shots-head { padding-bottom:7px; }
+.gcast-shots-head { padding-bottom:7px; flex:0 0 auto; }
 .gcast-shots-title { font-size:10px; letter-spacing:.08em; text-transform:uppercase;
   color:#c9aeff; padding:0 2px 5px; }
 .gcast-shots-file { font-family:ui-monospace,Consolas,monospace; font-size:9.5px;
   color:var(--h3-dim); padding:5px 2px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.gcast-shots-list { max-height:min(52vh, 420px); overflow:auto; display:flex; flex-direction:column; gap:4px; }
+/* flex:1 1 auto with min-height:0 lets the list shrink under a capped panel -
+   without the min-height a flex item refuses to go below its content and the
+   footers get pushed off screen, which is the low-res bug. */
+.gcast-shots-list { flex:1 1 auto; min-height:0; max-height:min(52vh, 420px);
+  overflow:auto; display:flex; flex-direction:column; gap:4px; }
 .gcast-shots-empty { color:var(--h3-dim); font-size:11px; padding:9px 4px; line-height:1.5; }
 .gcast-shot { display:flex; align-items:center; gap:8px; padding:5px; border-radius:7px;
   border:1px solid transparent; cursor:pointer; }
@@ -851,6 +860,7 @@ const CSS = `
 .gcast-shot.off .nm { text-decoration:line-through; }
 .gcast-shot.off .skip { color:#7a6a3a; }
 .gcast-shots-foot { display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+  flex:0 0 auto;
   padding-top:8px; margin-top:8px; border-top:1px solid var(--h3-line); }
 .gcast-shots-foot.proj { border-top:none; padding-top:5px; margin-top:0; }
 .gcast-shots-foot .lbl { color:var(--h3-dim); font-size:10px; letter-spacing:.04em; }
@@ -4071,11 +4081,35 @@ function buildUI(node) {
   shotsPanel.style.display = "none";
   document.body.append(shotsPanel);   // outside the node: a popup inside it reflows the layout
 
+  /* Hangs under the button by default, but the panel is head + list + three
+   * footer rows and the footers are where Render all lives. On a 1080p screen
+   * with the node low on the canvas there is not enough room below for all of
+   * that, and the list used to keep its own 420px so the bottom rows simply
+   * left the viewport with no way to reach them - the page does not scroll and
+   * only the list does. So: measure the room on screen, hand it to the panel as
+   * a max-height and let the list shrink into it, and flip above the button
+   * when below is too tight to be worth using. */
+  const SHOTS_W = 336, SHOTS_PAD = 8, SHOTS_GAP = 6, SHOTS_MIN = 200;
   function placeShots() {
     const r = bShots.getBoundingClientRect();
-    const w = 336;
-    shotsPanel.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + "px";
-    shotsPanel.style.top = (r.bottom + 6) + "px";
+    const vh = window.innerHeight;
+    const below = vh - r.bottom - SHOTS_GAP - SHOTS_PAD;
+    const above = r.top - SHOTS_GAP - SHOTS_PAD;
+    /* Only flip when going up actually buys room: a button near the top of the
+       screen has little above it and flipping there would make things worse. */
+    const up = below < SHOTS_MIN && above > below;
+    const room = Math.max(SHOTS_MIN, up ? above : below);
+    shotsPanel.style.maxHeight = room + "px";
+    shotsPanel.style.left =
+      Math.max(SHOTS_PAD,
+               Math.min(window.innerWidth - SHOTS_W - SHOTS_PAD, r.right - SHOTS_W)) + "px";
+    /* Read the height AFTER the cap is written, then clamp: with a viewport
+       shorter than the panel's own minimum the clamp is what keeps the footer
+       on screen at all. */
+    const h = shotsPanel.offsetHeight;
+    const top = up ? r.top - SHOTS_GAP - h
+                   : Math.min(r.bottom + SHOTS_GAP, vh - SHOTS_PAD - h);
+    shotsPanel.style.top = Math.max(SHOTS_PAD, top) + "px";
   }
 
   function outsideShots(e) {
