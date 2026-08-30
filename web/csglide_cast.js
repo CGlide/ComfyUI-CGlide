@@ -12,6 +12,40 @@ import { api } from "../../scripts/api.js";
  * ====================================================================== */
 
 const NODE_ID = "CSGlideCastCS";
+
+/* -- file dialogs -------------------------------------------------------
+ * Chromium allows exactly one file picker per window and rejects the next
+ * with NotAllowedError "File picker already active". The flag is supposed
+ * to clear when the first one settles; under Comfy Desktop it has been seen
+ * to stick, and from then on every dialog in the session throws - reported
+ * as "after the first save you cannot save again without restarting
+ * ComfyUI". Two guards, because we cannot fix Electron from here:
+ *   - never ask for a second picker ourselves while one is open
+ *   - treat the error as "no dialog available" rather than as a failed
+ *     save, so the caller downloads the file instead. A save that lands in
+ *     the downloads folder is a worse save. A save that throws is no save.
+ */
+let pickerBusy = false;
+
+function pickerUnavailable(e) {
+  return !!e && (e.name === "NotAllowedError" ||
+                 e.name === "SecurityError" ||
+                 e.name === "InvalidStateError");
+}
+
+async function withPicker(fn) {
+  if (pickerBusy) {
+    const e = new Error("a file dialog is already open");
+    e.name = "NotAllowedError";
+    throw e;
+  }
+  pickerBusy = true;
+  try {
+    return await fn();
+  } finally {
+    pickerBusy = false;
+  }
+}
 const ASSET_SUBFOLDER = "cglide";
 const FPS = 24;
 const MAX_IMAGES = 9, MAX_VIDEOS = 3, MAX_AUDIOS = 3;
@@ -3155,12 +3189,12 @@ function buildUI(node) {
   async function writeOut(blob, suggested, pack) {
     if (window.showSaveFilePicker) {
       try {
-        const handle = await window.showSaveFilePicker({
+        const handle = await withPicker(() => window.showSaveFilePicker({
           suggestedName: suggested,
           types: [pack
             ? { description: "H3 Studio pack", accept: { "application/zip": [".h3pack"] } }
             : { description: "H3 Studio preset", accept: { "application/json": [".json"] } }],
-        });
+        }));
         const w = await handle.createWritable();
         await w.write(blob);
         await w.close();
@@ -3206,10 +3240,10 @@ function buildUI(node) {
   async function pickFileForOpen() {
     if (window.showOpenFilePicker) {
       try {
-        const [h] = await window.showOpenFilePicker({
+        const [h] = await withPicker(() => window.showOpenFilePicker({
           types: [{ description: "H3 Studio preset or pack",
                     accept: { "application/json": [".json"], "application/zip": [".h3pack", ".h3projpack", ".zip"] } }],
-        });
+        }));
         const f = await h.getFile();
         return { file: f, handle: h };
       } catch (e) {
@@ -3263,11 +3297,11 @@ function buildUI(node) {
   async function pickFilesForOpen() {
     if (window.showOpenFilePicker) {
       try {
-        const hs = await window.showOpenFilePicker({
+        const hs = await withPicker(() => window.showOpenFilePicker({
           multiple: true,
           types: [{ description: "H3 Studio preset or pack",
                     accept: { "application/json": [".json"], "application/zip": [".h3pack", ".h3projpack", ".zip"] } }],
-        });
+        }));
         const out = [];
         for (const h of hs) out.push(await h.getFile());
         return out;
@@ -3882,30 +3916,42 @@ function buildUI(node) {
         await w.write(blob); await w.close();
         projLabel = projHandle.name;
         wrote = true;
-      } else if (window.showSaveFilePicker) {
-        try {
-          const h = await window.showSaveFilePicker({
-            suggestedName: suggested,
-            types: [{ description: "H3 Studio project", accept: { "application/json": [".json"] } }],
-          });
-          const w = await h.createWritable();
-          await w.write(blob); await w.close();
-          projHandle = h; projLabel = h.name;
-          wrote = true;
-        } catch (e) { if (!(e && e.name === "AbortError")) throw e; }
       } else {
-        /* No File System Access here, so the file lands in the browser's
-         * download folder with no dialog at all. Say so - a silent save
-         * reads as a save that did not happen. */
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = suggested;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-        projLabel = suggested;
-        wrote = true;
-        alert("H3 Studio: your browser has no save dialog here, so the project was downloaded as \u201c"
-              + suggested + "\u201d to your usual downloads folder.");
+        let cancelled = false, noDialog = !window.showSaveFilePicker;
+        if (!noDialog) {
+          try {
+            const h = await withPicker(() => window.showSaveFilePicker({
+              suggestedName: suggested,
+              types: [{ description: "H3 Studio project", accept: { "application/json": [".json"] } }],
+            }));
+            const w = await h.createWritable();
+            await w.write(blob); await w.close();
+            projHandle = h; projLabel = h.name;
+            wrote = true;
+          } catch (e) {
+            if (e && e.name === "AbortError") cancelled = true;
+            else if (pickerUnavailable(e)) {
+              console.warn("[H3 Studio] save dialog refused, downloading instead", e);
+              noDialog = true;
+            } else throw e;
+          }
+        }
+        /* Download fallback: either there is no File System Access here, or
+         * the dialog refused us. Either way the project is not lost, and it
+         * is said out loud - a silent save reads as a save that did not
+         * happen. */
+        if (noDialog && !cancelled && !wrote) {
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = suggested;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+          projLabel = suggested;
+          wrote = true;
+          alert("H3 Studio: the save dialog was not available, so the project was "
+                + "downloaded as \u201c" + suggested + "\u201d to your usual "
+                + "downloads folder instead.");
+        }
       }
       /* Snapshot AFTER a write that actually happened, never after an
        * abandoned dialog. Revert then means "back to what I last saved",
@@ -3984,24 +4030,33 @@ function buildUI(node) {
       }
       const blob = await zipWrite(entries);
 
-      if (window.showSaveFilePicker) {
+      let cancelled = false, noDialog = !window.showSaveFilePicker;
+      if (!noDialog) {
         try {
-          const h = await window.showSaveFilePicker({
+          const h = await withPicker(() => window.showSaveFilePicker({
             suggestedName: suggested,
             types: [{ description: "H3 Studio project pack",
                       accept: { "application/zip": [".zip", ".h3projpack"] } }],
-          });
+          }));
           const w = await h.createWritable();
           await w.write(blob); await w.close();
-        } catch (e) { if (!(e && e.name === "AbortError")) throw e; }
-      } else {
+        } catch (e) {
+          if (e && e.name === "AbortError") cancelled = true;
+          else if (pickerUnavailable(e)) {
+            console.warn("[H3 Studio] save dialog refused, downloading instead", e);
+            noDialog = true;
+          } else throw e;
+        }
+      }
+      if (noDialog && !cancelled) {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = suggested;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 20000);
-        alert("H3 Studio: your browser has no save dialog here, so the pack was downloaded as \u201c"
-              + suggested + "\u201d to your usual downloads folder.");
+        alert("H3 Studio: the save dialog was not available, so the pack was "
+              + "downloaded as \u201c" + suggested + "\u201d to your usual "
+              + "downloads folder instead.");
       }
     } catch (e) {
       alert("H3 Studio: could not pack the project \u2014 " + e);

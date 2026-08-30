@@ -58,15 +58,42 @@ def _open_source(path):
 
 
 def _load_frames(path):
+    """Decode a clip to float RGB, keeping whatever bit depth it was written at.
+
+    rgb48le rather than rgb24 on purpose. The chain intermediate is 10 bits a
+    channel, and reading it as 8 rounds 1024 levels down to 256 before the
+    affine fit ever sees them - then multiplies those coarser steps by the
+    gain and re-encodes to 10 bits again. A flat sky is where that shows, and
+    it stacks once per link. rgb48le is simply the nearest format wide enough
+    to hold the 10 bits intact; the top bits are padding.
+
+    Costs one decode buffer at 2 bytes a sample instead of 1, briefly. The
+    float32 tensor it becomes is the same size either way, and that is the
+    one that grows with the length of the chain.
+
+    Falls back to rgb24 if the build cannot give rgb48le, so an unusual
+    ffmpeg degrades to the old behaviour rather than failing the join.
+    """
     frames = []
+    depth = 65535.0
     with av.open(path) as container:
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
         for frame in container.decode(video=0):
+            if depth > 255.0:
+                try:
+                    frames.append(frame.to_ndarray(format="rgb48le"))
+                    continue
+                except Exception as e:
+                    if frames:
+                        raise
+                    print("[Glide Join] 16-bit decode unavailable (%s), "
+                          "falling back to 8-bit" % e)
+                    depth = 255.0
             frames.append(frame.to_ndarray(format="rgb24"))
     if not frames:
         raise ValueError("Glide Join: no video frames decoded from %s" % path)
-    return torch.from_numpy(np.stack(frames).astype(np.float32) / 255.0)
+    return torch.from_numpy(np.stack(frames).astype(np.float32) / depth)
 
 
 def _load_audio(path):

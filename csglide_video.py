@@ -31,12 +31,14 @@ try:
     from .csglide_video_presets import (
         available_presets, build_ffmpeg_cmd, container_for,
         needs_preview_copy, pipe_format, probe_video, resolve_preset,
+        CONTAINER_CHOICES, containers_for, resolve_container,
         write_ffmetadata, PRESETS, DEFAULT_PRESET,
     )
 except ImportError:
     from csglide_video_presets import (
         available_presets, build_ffmpeg_cmd, container_for,
         needs_preview_copy, pipe_format, probe_video, resolve_preset,
+        CONTAINER_CHOICES, containers_for, resolve_container,
         write_ffmetadata, PRESETS, DEFAULT_PRESET,
     )
 
@@ -240,6 +242,16 @@ class CSGlideVideo:
             lines.append("%s -- %s" % (name, p["note"]))
         preset_tip = "\n".join(lines)
 
+        clines = ["auto -- whatever the preset was designed for."]
+        for name in presets:
+            clines.append("%s -- %s" % (name, ", ".join(containers_for(name))))
+        container_tip = ("Wrapper for the encoded stream. The codec is "
+                         "unchanged, so this only affects what will open the "
+                         "file, not how it looks.\n"
+                         + "\n".join(clines)
+                         + "\nAsking for one a preset cannot mux keeps the "
+                           "preset's own container and says so in the log.")
+
         return {
             "required": {
                 "images": ("IMAGE",),
@@ -279,6 +291,15 @@ class CSGlideVideo:
                                "loudly and the real stream is shown in the "
                                "preview meta line.",
                 }),
+                # Appended LAST on purpose. ComfyUI restores widget values
+                # by position, so a new widget inserted higher up would
+                # shift every value in every saved workflow. At the end,
+                # older workflows simply have no value for it and take the
+                # default.
+                "container": (CONTAINER_CHOICES, {
+                    "default": "auto",
+                    "tooltip": container_tip,
+                }),
             },
             "optional": {
                 "audio": ("AUDIO", {
@@ -304,7 +325,7 @@ class CSGlideVideo:
 
     def combine(self, images, fps, preset, filename_prefix,
                 save_output=True, save_metadata=True, fallback_on_failure=True,
-                audio=None, prompt=None, extra_pnginfo=None):
+                container="auto", audio=None, prompt=None, extra_pnginfo=None):
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
 
@@ -350,7 +371,12 @@ class CSGlideVideo:
         def attempt(name):
             """Encode with one preset. Returns a dict on success, else None."""
             resolved_name, resolved = resolve_preset(name)
-            ext = container_for(name)
+            ext, honoured = resolve_container(name, container)
+            if not honoured:
+                print("[Glide Video] '%s' cannot be muxed into .%s -- writing "
+                      ".%s instead (this preset accepts: %s)"
+                      % (name, str(container).lower(), ext,
+                         ", ".join(containers_for(name))))
             out_path, filename, subdir = _next_path(directory, filename_prefix, ext)
 
             preview_path = None
@@ -368,6 +394,7 @@ class CSGlideVideo:
                 audio_channels=audio_channels,
                 preview_path=preview_path,
                 meta_path=meta_path,
+                container=ext,
             )
 
             deep = deep_cache.setdefault(name, pipe_format(name) == "rgb48le")
@@ -465,6 +492,12 @@ class CSGlideVideo:
                     "type": ui_type,
                     "fps": float(fps),
                     "frames": int(len(images)),
+                    # Sent from here rather than read off the <video>
+                    # element: the preview copy is what actually loads for
+                    # the masters, and for a format the browser cannot
+                    # decode at all there is no element to ask.
+                    "width": int(width),
+                    "height": int(height),
                     "format": "video/mp4" if ui_name.endswith(".mp4") else "video/" + result["ext"],
                     "master": os.path.basename(result["out_path"]),
                     "stream": result["stream"],

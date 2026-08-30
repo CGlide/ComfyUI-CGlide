@@ -98,9 +98,11 @@ const PRESET_DETAIL = {
     "where the last frame becomes the next clip's first. Editors and VLC " +
     "play it; phones and browsers do not.",
   "H.265 4:4:4 10-bit":
-    "<b>crf 16 &middot; yuv444p10le &middot; 16-bit pipe &middot; mkv</b><br>" +
+    "<b>crf 16 &middot; yuv444p10le &middot; 16-bit pipe &middot; mp4</b><br>" +
     "Same fidelity as the H.264 4:4:4 preset, appreciably smaller. " +
-    "Grain-preserving tuning applied. Same playback caveat.",
+    "Grain-preserving tuning applied. Same playback caveat &mdash; and " +
+    "note the container widget rewraps it without touching the codec, " +
+    "so a player that chokes on this will choke on the mp4 too.",
   "FFV1 (lossless archive)":
     "<b>RGB 16-bit &middot; mathematically lossless</b><br>" +
     "Bit-exact &mdash; verified round-trip, zero error. Stays in RGB, so " +
@@ -200,6 +202,7 @@ function build(node) {
   let fps = 24;
   let frames = 0;
   let dragging = false;
+  let dims = "";
 
   const frameDur = () => 1 / (fps || 24);
   const curFrame = () => Math.round(video.currentTime * fps);
@@ -216,6 +219,13 @@ function build(node) {
     if (t < 60) return `${t.toFixed(2)}s`;
     const m = Math.floor(t / 60);
     return `${m}:${(t - m * 60).toFixed(2).padStart(5, "0")}`;
+  }
+
+  /* dims and the probed stream share one line, dot-separated, either half
+     optional -- an old saved payload has no width, and probe_video returns
+     nothing when ffprobe is missing. */
+  function paintStream(stream) {
+    metaStream.textContent = [dims, stream].filter(Boolean).join("  \u00B7  ");
   }
 
   function paintTime() {
@@ -259,6 +269,11 @@ function build(node) {
   video.addEventListener("seeked", paintTime);
   video.addEventListener("loadedmetadata", () => {
     if (!frames && video.duration) frames = Math.round(video.duration * fps);
+    /* Last resort for payloads that predate the width/height fields. */
+    if (!dims && video.videoWidth) {
+      dims = `${video.videoWidth}\u00D7${video.videoHeight}`;
+      paintStream(metaStream.textContent);
+    }
     paintTime();
     node.setDirtyCanvas(true, true);
   });
@@ -278,7 +293,13 @@ function build(node) {
     video.src = url;
     metaRight.href = url;
     metaLeft.textContent = info.master || info.filename;
-    metaStream.textContent = info.stream || "";
+
+    /* Resolution first: it is the thing you check at a glance, and unlike
+       codec and pix_fmt it is not in the filename either. Comes from the
+       Python side so it is right even when the browser cannot decode the
+       master at all. */
+    dims = (info.width && info.height) ? `${info.width}\u00D7${info.height}` : "";
+    paintStream(info.stream || "");
 
     empty.style.display = "none";
     video.style.display = "block";

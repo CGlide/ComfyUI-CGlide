@@ -74,6 +74,7 @@ PRESETS = {
     "H.264 (compatible)": {
         "encoder": "libx264",
         "container": "mp4",
+        "containers": ["mp4", "mkv", "mov"],
         "browser_playable": True,
         "note": "Plays everywhere. Largest of the three share presets.",
         "args": [
@@ -90,6 +91,7 @@ PRESETS = {
     "H.265 (smaller)": {
         "encoder": "libx265",
         "container": "mp4",
+        "containers": ["mp4", "mkv", "mov"],
         "browser_playable": True,
         "note": "~35% smaller than H.264 at the same look. Grain-preserving tuning applied.",
         "args": [
@@ -113,6 +115,7 @@ PRESETS = {
     "AV1 (small, best quality)": {
         "encoder": "av1_nvenc",
         "container": "mp4",
+        "containers": ["mp4", "mkv"],
         "browser_playable": True,
         "note": "GPU encoded, near-instant. Smallest share preset, best gradients.",
         "fallback": "AV1 (small, CPU)",
@@ -135,6 +138,7 @@ PRESETS = {
     "AV1 (small, CPU)": {
         "encoder": "libsvtav1",
         "container": "mp4",
+        "containers": ["mp4", "mkv"],
         "browser_playable": True,
         "hidden": True,  # automatic fallback when NVENC AV1 is absent
         "note": "CPU AV1. Better quality per byte than NVENC, much slower.",
@@ -166,6 +170,7 @@ PRESETS = {
     "H.264 4:4:4 10-bit": {
         "encoder": "libx264",
         "container": "mp4",
+        "containers": ["mp4", "mkv", "mov"],
         "browser_playable": False,
         "pipe": "rgb48le",
         "note": "Full colour, 10-bit. For chunk handoff and grading. Editors yes, phones no.",
@@ -181,6 +186,7 @@ PRESETS = {
     "H.265 4:4:4 10-bit": {
         "encoder": "libx265",
         "container": "mkv",
+        "containers": ["mkv", "mp4", "mov"],
         "browser_playable": False,
         "pipe": "rgb48le",
         "note": "Same fidelity as the H.264 4:4:4 preset, appreciably smaller.",
@@ -197,6 +203,7 @@ PRESETS = {
     "ProRes 422 HQ (master)": {
         "encoder": "prores_ks",
         "container": "mov",
+        "containers": ["mov", "mkv"],
         "browser_playable": False,
         "pipe": "rgb48le",
         "note": "Editing master. All-intra, frame-accurate seeking, no generation loss.",
@@ -211,6 +218,7 @@ PRESETS = {
     "FFV1 (lossless archive)": {
         "encoder": "ffv1",
         "container": "mkv",
+        "containers": ["mkv"],
         "browser_playable": False,
         "pipe": "rgb48le",
         "note": "Bit-exact. No colour conversion at all. Large files.",
@@ -476,9 +484,43 @@ def pipe_format(name):
     return p.get("pipe", "rgb24")
 
 
-def container_for(name):
+CONTAINER_CHOICES = ["auto", "mp4", "mkv", "mov"]
+
+
+def containers_for(name):
+    """Containers this preset can legally be muxed into, best first.
+
+    Not every codec fits every container: FFV1 has no mp4 mapping at all,
+    and ProRes in mp4 is technically expressible but nothing in the edit
+    world expects it there. Asking for an impossible pair is not worth an
+    ffmpeg failure at the end of an eleven minute render, so the node
+    checks against this list first and says what it did instead.
+    """
     _, p = resolve_preset(name)
-    return p["container"]
+    return list(p.get("containers") or [p["container"]])
+
+
+def resolve_container(name, want=None):
+    """(extension, honoured) for a preset plus a requested container.
+
+    want=None or "auto" keeps the preset's own choice. Anything the
+    preset cannot mux falls back to that same default with honoured=False
+    so the caller can say so rather than failing.
+    """
+    _, p = resolve_preset(name)
+    default = p["container"]
+    if not want or want == "auto":
+        return default, True
+    want = str(want).lower().lstrip(".")
+    allowed = containers_for(name)
+    if want in allowed:
+        return want, True
+    return default, False
+
+
+def container_for(name, want=None):
+    """Extension only. Kept name-compatible with the original helper."""
+    return resolve_container(name, want)[0]
 
 
 def needs_preview_copy(name):
@@ -515,7 +557,7 @@ def write_ffmetadata(path, fields):
 
 def build_ffmpeg_cmd(preset, width, height, fps, out_path,
                      audio_path=None, audio_rate=None, audio_channels=2,
-                     preview_path=None, meta_path=None):
+                     preview_path=None, meta_path=None, container=None):
     """Build a single-pass ffmpeg command.
 
     Frames are written to stdin as raw rgb24, or rgb48le for the
@@ -528,6 +570,7 @@ def build_ffmpeg_cmd(preset, width, height, fps, out_path,
     decode. It costs one extra output stream, not another process.
     """
     name, p = resolve_preset(preset)
+    ext = (container or p["container"]).lower().lstrip(".")
 
     cmd = [
         ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y",
@@ -558,8 +601,23 @@ def build_ffmpeg_cmd(preset, width, height, fps, out_path,
         cmd += ["-map", "1:a:0"] + AUDIO_ARGS + ["-shortest"]
     if meta_idx is not None:
         cmd += ["-map_metadata", str(meta_idx)]
-    cmd += list(p["args"])
-    if p["container"] == "mp4":
+    args = list(p["args"])
+
+    # The hvc1 tag is an ISOBMFF thing. Matroska has no tag table for it
+    # and ffmpeg refuses the mux outright ("could not find tag for codec
+    # hevc"), so it has to come off when H.265 goes into mkv - and go ON
+    # when a preset that was mkv-only lands in mp4, or players that only
+    # accept hvc1 will reject a file that is otherwise perfectly fine.
+    if p["encoder"] == "libx265":
+        has_tag = "-tag:v" in args
+        if ext == "mkv" and has_tag:
+            i = args.index("-tag:v")
+            del args[i:i + 2]
+        elif ext in ("mp4", "mov") and not has_tag:
+            args += ["-tag:v", "hvc1"]
+
+    cmd += args
+    if ext in ("mp4", "mov"):
         cmd += ["-movflags", "+faststart+use_metadata_tags"]
     cmd += [out_path]
 
