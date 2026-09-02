@@ -233,6 +233,66 @@ def _fallback_chain(failed):
 class CSGlideVideo:
     """Glide Video -- one clip in, one file out."""
 
+    # ---------------- chain note ----------------
+
+    CHAIN_TAG = "description"
+
+    # Widget names worth recording, and what to call them in the note. Keyed on
+    # the widget rather than the node class on purpose: class names change with
+    # every pack and every ComfyUI release, but a seed has been called "seed" or
+    # "noise_seed" for as long as any of this has existed.
+    _CHAIN_KEYS = (
+        (("seed", "noise_seed"), "seed"),
+        (("steps",), "steps"),
+        (("lora_name",), "lora"),
+        (("unet_name", "ckpt_name", "model_name"), "model"),
+        (("sampler_name",), "sampler"),
+    )
+
+    # Substrings marking a node as an accelerator or precision trick. Those
+    # carry no useful widget - what matters is that one was in the graph at
+    # all, because it changes the result and is the first thing you forget
+    # having enabled.
+    _CHAIN_ACCEL = ("sage", "attention", "quant", "gguf", "compile",
+                    "teacache", "nunchaku", "fp8", "torchao")
+
+    @classmethod
+    def _summarise(cls, prompt, filename):
+        """One line saying how this clip was made.
+
+        Deliberately not the whole workflow JSON: that is already in the
+        "comment" tag, and carrying a copy per link would put three workflows
+        in a three clip chain. This is the short answer to "what made this
+        bit", which is the question actually asked six weeks later.
+        """
+        found, accel = {}, []
+        for _, node in sorted((prompt or {}).items()):
+            if not isinstance(node, dict):
+                continue
+            cls_name = str(node.get("class_type", ""))
+            low = cls_name.lower()
+            if any(w in low for w in cls._CHAIN_ACCEL) and cls_name not in accel:
+                accel.append(cls_name)
+            for key, value in (node.get("inputs") or {}).items():
+                # A list here is a link to another node, not a set value.
+                if isinstance(value, (list, dict)) or value is None:
+                    continue
+                for names, label in cls._CHAIN_KEYS:
+                    if str(key).lower() in names:
+                        text = str(value)
+                        if isinstance(value, float) and value.is_integer():
+                            text = str(int(value))
+                        found.setdefault(label, [])
+                        if text not in found[label]:
+                            found[label].append(text)
+        bits = ["file=%s" % filename]
+        for _, label in cls._CHAIN_KEYS:
+            if found.get(label):
+                bits.append("%s=%s" % (label, ",".join(found[label])))
+        if accel:
+            bits.append("accel=%s" % ",".join(accel))
+        return "  ".join(bits)
+
     @classmethod
     def INPUT_TYPES(cls):
         presets = available_presets()
@@ -306,6 +366,14 @@ class CSGlideVideo:
                     "tooltip": "From VAEDecodeAudio. Muxed in the same pass, "
                                "so there is no second file.",
                 }),
+                "chain": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "The chain note out of Glide Join. Wire it and a "
+                               "joined clip records how EVERY clip in it was "
+                               "made - seeds, steps, LoRAs, accelerators - so a "
+                               "finished 40 second file can still tell you which "
+                               "seed produced the middle of it.",
+                }),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -325,7 +393,8 @@ class CSGlideVideo:
 
     def combine(self, images, fps, preset, filename_prefix,
                 save_output=True, save_metadata=True, fallback_on_failure=True,
-                container="auto", audio=None, prompt=None, extra_pnginfo=None):
+                container="auto", audio=None, chain=None, prompt=None,
+                extra_pnginfo=None):
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
 
@@ -361,10 +430,14 @@ class CSGlideVideo:
                 payload.update(extra_pnginfo)   # includes "workflow"
             meta_path = os.path.join(_temp_dir(), "glide_meta_%s.txt" % uid)
             os.makedirs(os.path.dirname(meta_path), exist_ok=True)
-            write_ffmetadata(meta_path, {
+            # Written for real inside attempt(), once the output filename is
+            # known - the chain note names the file it describes, and a
+            # fallback to another preset can change that name.
+            meta_fields = {
                 "comment": json.dumps(payload, separators=(",", ":")),
                 "encoder": "Glide Video",
-            })
+            }
+            write_ffmetadata(meta_path, meta_fields)
 
         deep_cache = {}
 
@@ -378,6 +451,16 @@ class CSGlideVideo:
                       % (name, str(container).lower(), ext,
                          ", ".join(containers_for(name))))
             out_path, filename, subdir = _next_path(directory, filename_prefix, ext)
+
+            # Append this clip to the history the source clip brought with it.
+            # Nothing is wired for an ordinary render, so `chain` is None and
+            # this is simply the first line of a history that may never grow.
+            if meta_path:
+                note = self._summarise(prompt, filename)
+                previous = (chain or "").strip()
+                write_ffmetadata(meta_path, dict(
+                    meta_fields,
+                    **{self.CHAIN_TAG: (previous + "\n" + note) if previous else note}))
 
             preview_path = None
             preview_name = None

@@ -43,6 +43,10 @@ const CSS = `
   flex: 1; min-width: 30px; height: 4px; margin: 0 4px;
   accent-color: #4fff8f; cursor: pointer;
 }
+.glide-video-vol {
+  width: 46px; flex: 0 0 auto; height: 4px; margin: 0 2px;
+  accent-color: #4fff8f; cursor: pointer;
+}
 .glide-video-time {
   color: #888; font-size: 10px; font-variant-numeric: tabular-nums;
   white-space: nowrap; min-width: 92px; text-align: right;
@@ -98,7 +102,7 @@ const PRESET_DETAIL = {
     "where the last frame becomes the next clip's first. Editors and VLC " +
     "play it; phones and browsers do not.",
   "H.265 4:4:4 10-bit":
-    "<b>crf 16 &middot; yuv444p10le &middot; 16-bit pipe &middot; mp4</b><br>" +
+    "<b>crf 16 &middot; yuv444p10le &middot; 16-bit pipe</b><br>" +
     "Same fidelity as the H.264 4:4:4 preset, appreciably smaller. " +
     "Grain-preserving tuning applied. Same playback caveat &mdash; and " +
     "note the container widget rewraps it without touching the codec, " +
@@ -108,6 +112,20 @@ const PRESET_DETAIL = {
     "Bit-exact &mdash; verified round-trip, zero error. Stays in RGB, so " +
     "there is no colour matrix conversion to lose anything to. Very " +
     "large. Writes a small H.264 alongside for this preview.",
+};
+
+/* What each preset writes on "auto". Mirrors csglide_video_presets.py -
+ * duplicated for the same reason PRESET_DETAIL is: this is UI copy, and the
+ * authoritative table lives in Python. */
+const PRESET_CONTAINER = {
+  "H.264 (compatible)": "mp4",
+  "H.265 (smaller)": "mp4",
+  "AV1 (small, best quality)": "mp4",
+  "AV1 (small, CPU)": "mp4",
+  "H.264 4:4:4 10-bit": "mp4",
+  "H.265 4:4:4 10-bit": "mp4",
+  "ProRes 422 HQ (master)": "mov",
+  "FFV1 (lossless archive)": "mkv",
 };
 
 function injectCSS() {
@@ -141,7 +159,7 @@ function build(node) {
   wrap.appendChild(empty);
 
   const video = document.createElement("video");
-  video.muted = false;
+  video.muted = false;   // paintSound() owns this from here on
   video.playsInline = true;
   video.preload = "auto";
   video.style.display = "none";
@@ -178,6 +196,14 @@ function build(node) {
   bar.appendChild(time);
 
   const bLoop = mk("\u21BB", "Loop");
+  const bMute = mk("\u{1F50A}", "Mute  (m)");
+
+  const vol = document.createElement("input");
+  vol.type = "range";
+  vol.className = "glide-video-vol";
+  vol.min = "0"; vol.max = "100"; vol.value = "100";
+  vol.title = "Volume";
+  bar.appendChild(vol);
 
   const detail = document.createElement("div");
   detail.className = "glide-video-detail";
@@ -211,6 +237,22 @@ function build(node) {
     const on = !!node.properties.glide_loop;
     video.loop = on;
     bLoop.classList.toggle("on", on);
+  }
+
+  /* Volume and mute are remembered per node, like loop. H3 clips carry real
+     stereo, so the preview starts audible - but a graph with several of these
+     will all play at once, and muting one should stay muted across a reload
+     rather than surprising you on the next render. */
+  function paintSound() {
+    const muted = !!node.properties.glide_muted;
+    const level = node.properties.glide_volume;
+    const v = (level === undefined ? 1 : Math.max(0, Math.min(1, level)));
+    video.muted = muted;
+    video.volume = v;
+    vol.value = String(Math.round(v * 100));
+    bMute.textContent = muted || v === 0 ? "\u{1F507}" : "\u{1F50A}";
+    bMute.classList.toggle("on", !muted && v > 0);
+    vol.style.opacity = muted ? "0.4" : "1";
   }
 
   /* seconds under a minute, m:ss.hh over it */
@@ -255,6 +297,17 @@ function build(node) {
   bLoop.onclick  = () => {
     node.properties.glide_loop = !node.properties.glide_loop;
     paintLoop();
+  };
+  bMute.onclick  = () => {
+    node.properties.glide_muted = !node.properties.glide_muted;
+    paintSound();
+  };
+  vol.oninput = () => {
+    node.properties.glide_volume = Number(vol.value) / 100;
+    /* Dragging up from silence is a clear "I want to hear this", so it
+       releases the mute rather than leaving a slider that does nothing. */
+    if (node.properties.glide_volume > 0) node.properties.glide_muted = false;
+    paintSound();
   };
 
   seek.oninput = () => {
@@ -307,17 +360,29 @@ function build(node) {
     meta.style.display = "flex";
 
     paintLoop();
+    paintSound();
     // remember it so the preview survives a workflow reload
     node.properties.glide_last = info;
   }
 
-  function setDetail(presetName) {
-    const html = PRESET_DETAIL[presetName];
+  /* The container is a widget now, so it cannot live in the static copy -
+     it was still claiming mp4 while the node wrote an mkv. Resolve it here
+     and splice it into the end of the header run. An unknown preset (a
+     future one, or a fallback) just gets no container token rather than a
+     wrong one. */
+  function setDetail(presetName, container) {
+    let html = PRESET_DETAIL[presetName];
+    if (html) {
+      let ext = (container || "auto").toLowerCase();
+      if (ext === "auto") ext = PRESET_CONTAINER[presetName] || "";
+      if (ext) html = html.replace("</b>", " &middot; " + ext + "</b>");
+    }
     detail.innerHTML = html || "";
     detail.style.display = html ? "block" : "none";
   }
 
   paintLoop();
+  paintSound();
   return { wrap, show, setDetail };
 }
 
@@ -343,17 +408,22 @@ app.registerExtension({
         hideOnZoom: false,
       });
 
-      // keep the detail line in step with the preset dropdown
+      // keep the detail line in step with the preset AND container dropdowns
       setTimeout(() => {
-        const w = this.widgets?.find((x) => x.name === "preset");
-        if (!w) return;
-        ui.setDetail(w.value);
-        const prev = w.callback;
-        w.callback = function (v) {
-          const out = prev?.apply(this, arguments);
-          ui.setDetail(v);
-          return out;
-        };
+        const wp = this.widgets?.find((x) => x.name === "preset");
+        const wc = this.widgets?.find((x) => x.name === "container");
+        if (!wp) return;
+        const paint = () => ui.setDetail(wp.value, wc ? wc.value : "auto");
+        paint();
+        for (const w of [wp, wc]) {
+          if (!w) continue;
+          const prev = w.callback;
+          w.callback = function () {
+            const out = prev?.apply(this, arguments);
+            paint();
+            return out;
+          };
+        }
       }, 0);
 
       this.size = this.computeSize();

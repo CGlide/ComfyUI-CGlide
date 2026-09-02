@@ -3,7 +3,7 @@ csglide_video_presets.py
 
 Encoder presets for the CGlide video combine node.
 
-Three share presets, one master, one archive. Each is a single balanced
+Three share presets, four high-fidelity, one master, one archive. Each is a single balanced
 choice -- no crf/preset/pix_fmt widgets exposed to the user. Quality
 targets are matched across codecs so switching preset changes file size,
 not how it looks.
@@ -196,6 +196,72 @@ PRESETS = {
             "-preset", "medium",
             "-pix_fmt", "yuv444p10le",
             "-x265-params", "deblock=-2,-2:no-sao=1:selective-sao=0",
+        ],
+    },
+
+    # The same two streams again, on NVENC. Measured at 21.8x realtime
+    # against libx265 medium on the same 462-frame clip, at a near-identical
+    # bitrate -- for a file whose whole job is to be decoded again as a
+    # continuation anchor, that trade is one-sided. They are separate presets
+    # rather than an automatic GPU path inside the CPU ones: an encoder that
+    # silently changes with the hardware makes a bug report unreadable.
+    #
+    # Both declare the CPU preset as their fallback, so a build without NVENC,
+    # a machine without an NVIDIA card, or a GPU whose NVENC lacks 4:4:4 all
+    # land on the software encoder instead of losing the render.
+
+    "H.265 4:4:4 10-bit (GPU)": {
+        "encoder": "hevc_nvenc",
+        "container": "mkv",
+        "containers": ["mkv", "mp4", "mov"],
+        "browser_playable": False,
+        "pipe": "rgb48le",
+        "fallback": "H.265 4:4:4 10-bit",
+        "note": "The 4:4:4 10-bit master, encoded on the GPU. Around 20x faster.",
+        "args": [
+            "-c:v", "hevc_nvenc",
+            "-preset", "p7",
+            # hq, not uhq: uhq is Blackwell-and-newer and errors out on Ada
+            # and Turing, which would silently drop those cards to the CPU
+            # fallback. The difference at this qp is not worth that.
+            "-tune", "hq",
+            "-rc", "constqp",
+            # constqp, not cq/vbr: this is a mastering preset, so spend what
+            # the frame needs and do not let a rate ceiling decide.
+            "-qp", "16",
+            # yuv444p16le is the INPUT surface NVENC wants for 10-bit 4:4:4.
+            # The stream it writes is 10-bit -- ffprobe reports the output as
+            # yuv444p16le on some builds and yuv444p10le on others, so any
+            # chroma check downstream must match on "444", not on bit depth.
+            "-pix_fmt", "yuv444p16le",
+            # HEVC Range Extensions. 4:4:4 is not expressible in main or
+            # main10, so without this the encoder refuses or silently
+            # subsamples.
+            "-profile:v", "rext",
+        ],
+    },
+
+    "H.264 4:4:4 8-bit (GPU)": {
+        "encoder": "h264_nvenc",
+        "container": "mkv",
+        "containers": ["mkv", "mp4", "mov"],
+        "browser_playable": False,
+        # rgb24, not rgb48le: High 4:4:4 Predictive as NVENC implements it is
+        # 8-bit only, so feeding 16-bit frames would just be discarded on the
+        # way in. This preset keeps the colour and gives up the depth.
+        "pipe": "rgb24",
+        "fallback": "H.264 4:4:4 10-bit",
+        "note": "Full colour on the GPU, but 8-bit -- the H.265 GPU preset keeps 10.",
+        "args": [
+            "-c:v", "h264_nvenc",
+            "-preset", "p7",
+            "-tune", "hq",
+            "-rc", "constqp",
+            # Lower than the HEVC preset's 16: H.264 is the weaker codec and
+            # this one has no 10th bit to hide quantisation in.
+            "-qp", "14",
+            "-pix_fmt", "yuv444p",
+            "-profile:v", "high444p",
         ],
     },
 

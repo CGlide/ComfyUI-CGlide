@@ -189,6 +189,11 @@ function parseInitial(raw) {
          are dropped there, kept so the amber note survives a reload the same
          way the chroma label does. */
       if (o.carry) r.carry = true;
+      /* Marks the slot the continuation owns. UI-only — Python treats a seam
+         reference as an ordinary video reference, which is the whole point of
+         it. Kept so a reload still knows the slot is the chain's and not a
+         hand-picked reference to be preserved. */
+      if (o.seam) r.seam = true;
       if (o.spanNote) r.spanNote = String(o.spanNote);
       if (Number.isFinite(+o.spanScore)) r.spanScore = +o.spanScore;
     }
@@ -495,6 +500,14 @@ const CSS = `
   border-radius:8px; padding:8px 9px; display:flex; flex-direction:column; gap:6px;
   box-shadow:0 2px 6px rgba(0,0,0,.45); }
 .gcast-ctl { display:flex; align-items:center; gap:6px; }
+/* Sits with the width and height inputs rather than under them: it is an
+   action ON those two numbers, not a fourth setting. Ghost until there is a
+   second clip to apply to. */
+.gcast-btn.tiny { padding:4px 8px; font-size:10.5px; letter-spacing:.02em;
+  color:var(--h3-dim); }
+.gcast-btn.tiny[disabled] { opacity:.35; cursor:default; }
+.gcast-btn.tiny[disabled]:hover { border-color:var(--h3-line); color:var(--h3-dim); }
+.gcast-btn.tiny.done { border-color:#a97bff; color:#c9aeff; }
 .gcast select, .gcast input[type="number"] {
   background:var(--h3-bg); color:var(--h3-txt); border:1px solid var(--h3-line);
   border-radius:5px; padding:4px 6px; font-size:11.5px; font-family:inherit; outline:none; }
@@ -656,6 +669,21 @@ const CSS = `
   pointer-events:none; text-shadow:0 1px 4px #000, 0 0 10px #000; letter-spacing:.02em; }
 .gcast-wavlabel span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
   max-width:100%; }
+/* A truncated name is the one case where the label has a job left to do, so
+   it stops being decoration and takes the pointer - hovering scrolls it far
+   enough left to read the end, then puts it back. Only the truncated ones:
+   a name that already fits has nothing to reveal and should not move under
+   the cursor.
+
+   Two layers, and it has to be two: the span clips and stays still, the <i>
+   inside it moves. Translating the clipping box itself carries its own
+   overflow window along with it, so the text slides and you read exactly the
+   same characters - which is what the first attempt did. */
+.gcast-wavlabel.long { pointer-events:auto; cursor:default; }
+.gcast-wavlabel.long span i { display:inline-block; font-style:normal;
+  transition:transform 2.2s linear; }
+.gcast-wavlabel.long:hover span { text-overflow:clip; }
+.gcast-wavlabel.long:hover span i { transform:translateX(var(--gc-slide, 0px)); }
 /* Only when a corner chip is actually present \u2014 otherwise the name gets the
    full width, which most video slots have. */
 .gcast-wavlabel.inset { padding-left:74px; padding-right:74px; }
@@ -802,7 +830,20 @@ const CSS = `
   resize:none; width:100%; box-sizing:border-box; outline:none;
   overflow-y:auto; overscroll-behavior:contain; }
 /* preset bar + dialogs ------------------------------------------------ */
-.gcast-bar { display:flex; align-items:center; gap:6px; }
+/* The header row carries the two things looked at most - which clip this is,
+   and how to get to another one - so it sits a size up from the cards below
+   rather than matching them. */
+.gcast-bar { display:flex; align-items:center; gap:7px; padding:2px 0 4px; }
+.gcast-bar .gcast-btn { padding:6px 12px; font-size:12px; }
+.gcast-bar .gcast-btn.shots.nav { padding:6px 7px; }
+/* Settings belong to the node, not to the project, so the gear drops the violet
+   the Project button and its steppers share and sits in plain grey, with a gap
+   before it so it does not read as part of the stepper pair. */
+.gcast-btn.shots.nav.gear { margin-left:6px; padding:5px 7px;
+  background:var(--h3-raise); border-color:var(--h3-line); }
+.gcast-btn.shots.nav.gear .ico { color:#9a9a9a; }
+.gcast-btn.shots.nav.gear:hover { border-color:#6b6b6b; }
+.gcast-btn.shots.nav.gear:hover .ico { color:#e2e2e2; }
 .gcast-bar .name { font-family:ui-monospace,Consolas,monospace; font-size:11px;
   color:var(--h3-txt); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .gcast-bar .name .dirty { color:var(--h3-dim); }
@@ -837,6 +878,19 @@ const CSS = `
    a whole film rather than acting on the clip on screen. */
 .gcast-btn.shots .ico { color:#d3b8ff; flex:0 0 auto; pointer-events:none; transition:.13s; }
 .gcast-btn.shots:hover .ico { color:#efe6ff; }
+/* Clip stepper. Sits hard against the Project button and shares its violet so
+   the three read as one control: which clip, and one step either way. Square
+   and narrow on purpose - a triangle needs no label, and anything wider starts
+   competing with Project for the eye. */
+.gcast-clipnav { display:inline-flex; gap:2px; margin-left:4px; }
+.gcast-btn.shots.nav { padding:4px 5px; gap:0; }
+.gcast-btn.shots.nav .ico { color:#c9aeff; }
+/* Dim, not hidden, and not wrapping: at 1/3 the left triangle has to say there
+   is nothing to its left. A wrap would land you on the last clip with nothing
+   on screen explaining the jump. */
+.gcast-btn.shots.nav[disabled] { opacity:.3; cursor:default; }
+.gcast-btn.shots.nav[disabled]:hover { border-color:#584a78; }
+.gcast-btn.shots.nav[disabled]:hover .ico { color:#c9aeff; }
 .gcast-shots {
   --h3-raise:#2b2b2b; --h3-line:#3b3b3b; --h3-well:#131313; --h3-panel:#212121;
   --h3-txt:#e3e3e3; --h3-dim:#979797; --h3-violet:#a97bff;
@@ -851,6 +905,22 @@ const CSS = `
      ends on its Render all row instead of running off the bottom. */
   display:flex; flex-direction:column; max-height:calc(100vh - 16px); }
 .gcast-shots[data-mode="fl2va"] { --h3-accent:#59c14f; --h3-accent-dim:#59c14f26; }
+/* Settings popover. Same shell as the project panel, narrower, no list - it is
+   a short standing list of defaults, not something scrolled. */
+.gcast-set { width:290px; }
+.gcast-set-row { display:flex; gap:8px; align-items:flex-start; padding:7px 2px;
+  cursor:pointer; }
+/* Two classes deep on purpose: .gcast-shots input further down the sheet sets
+   width:100% for the project panel's text fields, and at equal specificity the
+   later rule wins - which sized the checkbox to the whole row and shoved the
+   label out of the panel. */
+.gcast-set .gcast-set-row input[type="checkbox"] { width:14px; height:14px;
+  flex:0 0 auto; margin:1px 0 0; padding:0; accent-color:#a97bff; cursor:pointer; }
+/* min-width:0 lets the text column shrink to the panel instead of sizing to
+   its longest line and overflowing. */
+.gcast-set-row .txt { flex:1 1 auto; min-width:0; }
+.gcast-set-row .t { font-size:11.5px; color:var(--h3-txt); line-height:1.35; }
+.gcast-set-row .d { font-size:10.5px; color:var(--h3-dim); line-height:1.45; padding-top:3px; }
 .gcast-shots input { background:var(--h3-well); color:var(--h3-txt); box-sizing:border-box;
   border:1px solid var(--h3-line); border-radius:5px; padding:4px 7px; width:100%;
   font-family:inherit; font-size:11.5px; outline:none; }
@@ -1228,7 +1298,39 @@ function buildUI(node) {
   bSaveAs.title = "Choose a location. JSON, media referenced by filename";
   bPack.title = "Choose a location. Zip with the media inside \u2014 portable";
   bShots.title = "The clips of this project \u2014 switch between them, and save or open the project as one file";
-  bar.append(nameLabel, el("div", "spacer"), bSave, bSaveAs, bPack, bLoad, bShots);
+
+  /* Stepping to the neighbouring clip is the most frequent thing anyone does
+     in a project, and it cost opening the panel, finding the row and clicking
+     it. These are one click. They go through switchTo(), which stashes the
+     clip on screen back into the project first, so an unsaved edit survives
+     the step exactly as it does from the list. */
+  const clipNav = el("div", "gcast-clipnav");
+  const bPrev = el("button", "gcast-btn shots nav");
+  const bNext = el("button", "gcast-btn shots nav");
+  const TRI = (d) =>
+      '<svg class="ico" viewBox="0 0 24 24" width="9" height="9" aria-hidden="true">'
+    + '<path d="' + d + '" fill="currentColor"/></svg>';
+  bPrev.innerHTML = TRI("M15.5 4 6.5 12 15.5 20Z");
+  bNext.innerHTML = TRI("M8.5 4 17.5 12 8.5 20Z");
+  bPrev.title = "Previous clip";
+  bNext.title = "Next clip";
+  clipNav.append(bPrev, bNext);
+
+  const bGear = el("button", "gcast-btn shots nav gear");
+  bGear.title = "Defaults for this node";
+  /* Built from an even-odd annulus plus eight teeth rather than a solid body
+     behind a ring: a filled body shows through the ring's hole and the centre
+     reads as a dot instead of a hole. */
+  bGear.innerHTML =
+      '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">'
+    + '<g fill="currentColor">'
+    + '<rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(0 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(45 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(90 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(135 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(180 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(225 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(270 12 12)"/><rect x="10.55" y="3.5" width="2.9" height="3.1" rx="0.9" transform="rotate(315 12 12)"/>'
+    + '<path fill-rule="evenodd" d="M12 5.7a6.3 6.3 0 1 1 0 12.6 6.3 6.3 0 1 1 0-12.6Z'
+    +   'M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"/>'
+    + '</g>'
+    + '</svg>';
+  bar.append(nameLabel, el("div", "spacer"), bSave, bSaveAs, bPack, bLoad,
+             bShots, clipNav, bGear);
 
   /* ---- mode bar ---- */
   const modeBar = el("div", "gcast-modebar");
@@ -1253,7 +1355,11 @@ function buildUI(node) {
   const inH = el("input"); inH.type = "number"; inH.step = 32; inH.min = 32;
   canvasCtl.append(selRatio.el, selSize.el);
   const canvasCtl2 = el("div", "gcast-ctl");
-  canvasCtl2.append(inW, el("span", "gcast-read", "×"), inH);
+  /* Changing the canvas one clip at a time is the kind of chore that gets done
+     wrong once and shows up as a resolution change mid-project. */
+  const bAllRes = el("button", "gcast-btn tiny", "all clips");
+  bAllRes.title = "Give every clip in this project this canvas size";
+  canvasCtl2.append(inW, el("span", "gcast-read", "×"), inH, bAllRes);
   cCanvas.append(canvasCtl2);
   const canvasNote = el("div", "gcast-read");
   cCanvas.append(canvasCtl);
@@ -1586,7 +1692,16 @@ function buildUI(node) {
        with no chroma known -- and a clip from somewhere else is precisely the
        one worth checking. Done after the render so the slot appears at once
        and the badge follows. */
-    if (slot === st.cont && kind === "video") tagChroma(slot, name);
+    if (slot === st.cont && kind === "video") {
+      tagChroma(slot, name);
+      /* A clip dropped straight on CONTINUE FROM is a continuation like any
+         other, so it gets the seam reference the adopt route gets. Pin the
+         guide window first so both land on the same tail. */
+      const win = tailWindow(slot.dur || 0, 22);
+      slot.start = win.start; slot.end = win.end;
+      await carrySeamRef({ mirror: slot }, win);
+      render(); commit();
+    }
   }
 
   /* Ask the server what a file in input/ actually is. Quiet on failure: an
@@ -1774,6 +1889,49 @@ function buildUI(node) {
     }
   }
 
+  /* The SEAM REFERENCE. The guide is frame-exact at the join and holds nothing
+   * past it: at hi+1 the anchor lets go and the model is back on its own
+   * exposure. The same tail, handed over a second time as an ordinary video
+   * reference, carries no timing at all but stays present for the whole clip -
+   * so it is still there after the anchor releases.
+   *
+   * Not the look carry, and deliberately none of its machinery: no span
+   * picking (the window is the guide's, not the clearest moment), no `carry`
+   * flag (its injected line tells the model to ignore camera and action, which
+   * is the opposite of what a continuation wants). Sound off, because an
+   * @videoaudio tag would pull the previous clip's mix into this one.
+   */
+  const SEAM_REF_SLOT = 2;                       // video 3
+  async function carrySeamRef(pick, win) {
+    /* Default on, but measured both ways: it usually holds the look and the
+       design better past the join, and on some shots it darkens more instead
+       and nudges the camera. So it is a setting, not a rule. */
+    if (!settings().seamRef) return;
+    const slot = (st.slots.videos || [])[SEAM_REF_SLOT];
+    if (!slot) return;
+    if (slot.file && !slot.seam) {
+      console.warn(`[H3 Studio] seam reference: replacing ${slot.file} in video `
+                 + `${SEAM_REF_SLOT + 1} \u2014 the continuation owns that slot`);
+    }
+    if (pick && pick.mirror) {
+      /* The file is already in input/ - dropped or picked straight onto
+         CONTINUE FROM. Copying the guide slot's own fields is both correct and
+         cheaper than sending it back through adopt, which reads from output/. */
+      clearSlot(slot);
+      slot.file = pick.mirror.file;
+      slot.dur = pick.mirror.dur;
+      slot.chroma = pick.mirror.chroma || "";
+      slot.codec = pick.mirror.codec || "";
+      slot.audio = false;
+    } else {
+      await adoptInto(slot, pick, { silent: true, reference: true });
+    }
+    /* Same window as the guide. Same file, so the seconds transfer directly. */
+    if (win && win.end > win.start) { slot.start = win.start; slot.end = win.end; }
+    slot.seam = true;
+    delete slot.carry; delete slot.spanNote; delete slot.spanScore;
+  }
+
   async function adoptLastRender(slot, card, btn) {
     if (btn) { btn.disabled = true; btn.textContent = "\u2026"; }
     try {
@@ -1787,7 +1945,13 @@ function buildUI(node) {
         flashWrong(card);
         return;
       }
-      await adoptInto(slot, { ...list[0], type: "output" });
+      const pick = { ...list[0], type: "output" };
+      await adoptInto(slot, pick);
+      /* Pin the guide's window here rather than leaving it to render()'s
+         normalisation, so the seam reference has a window to mirror. */
+      const win = tailWindow(slot.dur || 0, 22);
+      slot.start = win.start; slot.end = win.end;
+      if (slot === st.cont) await carrySeamRef(pick, win);
       render(); commit();
     } catch (err) {
       console.error("[H3 Studio] could not adopt the last render:", err);
@@ -1990,6 +2154,16 @@ function buildUI(node) {
     }
     return out;
   };
+  /* The last `want` frames of a clip, on the grid, or the largest run the clip
+     can actually supply. One definition, used by the continuation slot's own
+     normalisation and by the seam reference that mirrors it — the two must
+     land on the same window or the reference stops being the same tail. */
+  const tailWindow = (dur, want) => {
+    const spans = gridSpans(dur || 0);
+    const pick = spans.find((r) => r.g === (want || 22)) || spans[spans.length - 1];
+    return pick ? { start: Math.max(0, dur - pick.sp), end: dur }
+                : { start: 0, end: dur || 0 };
+  };
 
   /* dual-handle trim, in seconds, clamped to the clip's own duration */
   function trim(slot, usedSeconds, isVideo, media, label, tailOnly) {
@@ -2037,8 +2211,23 @@ function buildUI(node) {
     }
     if (label) {
       const lb = el("div", "gcast-wavlabel" + (cornered ? " inset" : ""));
-      lb.append(el("span", null, label));
+      const sp = el("span");
+      const inner = el("i", null, label);
+      sp.append(inner);
+      lb.title = label;   // the OS tooltip, for anyone who would rather not wait
+      lb.append(sp);
       track.append(lb);
+      /* Measured after layout, because whether a name overflows depends on the
+         node's width and on whether a chroma chip pushed the padding in. rAF
+         so the element is in the document and has been laid out. The inner
+         width is the true text width; the span is the window onto it. */
+      requestAnimationFrame(() => {
+        const over = inner.offsetWidth - sp.clientWidth;
+        if (over > 1) {
+          lb.classList.add("long");
+          lb.style.setProperty("--gc-slide", (-over - 2) + "px");
+        }
+      });
     }
     const times = el("div", "gcast-times");
     const play = el("button", "gcast-play", "\u25B6");
@@ -2541,9 +2730,8 @@ function buildUI(node) {
      * or to the largest grid run the clip can actually supply. */
     const c = st.cont;
     if (c.file && c.dur && (c.start || 0) <= 0.001 && (c.end || 0) >= c.dur - 0.001) {
-      const spans = gridSpans(c.dur);
-      const pick = spans.find((r) => r.g === 22) || spans[spans.length - 1];
-      if (pick) { c.end = c.dur; c.start = Math.max(0, c.dur - pick.sp); }
+      const w = tailWindow(c.dur, 22);
+      c.start = w.start; c.end = w.end;
     }
     /* No section of its own: it joins the row that is already on screen, so the
      * node stays exactly as tall as it was. Both modes get it - continuing is
@@ -3346,6 +3534,12 @@ function buildUI(node) {
     nameLabel.innerHTML = (fileLabel
       ? `${badge} ${fileLabel}`
       : `${badge} <span class="dirty">unsaved</span>`) + shot;
+    /* Repaint the Project button from the same place. It used to be painted
+       only by the actions that CHANGE the project, so a workflow reloaded with
+       a project already in it came up reading plain "Project" with the
+       steppers and "all clips" dead - the state was there, nothing had asked
+       the button to look at it. */
+    paintShotsBtn();
   }
 
   /* ---- shots: several shots in one project --------------------------
@@ -3489,6 +3683,13 @@ function buildUI(node) {
     bShotsLbl.textContent = p.shots.length
       ? `Project ${p.idx >= 0 ? p.idx + 1 : "-"}/${p.shots.length}`
       : "Project";
+    /* Always on screen, dimmed when there is nowhere to go. They were hidden
+       below two clips at first, which made "where are my arrows" and "this
+       file did not load" look identical - not worth the tidiness. */
+    const canStep = p.shots.length > 1 && p.idx >= 0;
+    bPrev.disabled = !canStep || p.idx <= 0;
+    bNext.disabled = !canStep || p.idx >= p.shots.length - 1;
+    bAllRes.disabled = p.shots.length < 2;
   }
 
   /* A new shot in a film usually reuses the same cast and location, so it
@@ -3756,6 +3957,10 @@ function buildUI(node) {
           if (!previous) throw new Error("the previous clip produced no video to continue from");
           run.note = "taking the tail of the previous render\u2026"; paintRun();
           await raceCancel(adoptInto(st.cont, previous));
+          const win = tailWindow(st.cont.dur || 0, 22);
+          st.cont.start = win.start; st.cont.end = win.end;
+          run.note = "doubling the tail as a seam reference\u2026"; paintRun();
+          await raceCancel(carrySeamRef(previous, win));
           render(); commit(); stash();
         }
 
@@ -4132,6 +4337,75 @@ function buildUI(node) {
 
   /* ---- the panel ---- */
 
+  /* ---- node settings ------------------------------------------------
+   * Defaults that belong to the node rather than to a clip: they hold across
+   * every clip in the project and ride along in the workflow. Read through
+   * settings() so a workflow saved before a key existed still gets its
+   * default instead of undefined.
+   */
+  const SETTING_DEFAULTS = { seamRef: true };
+  function settings() {
+    node.properties = node.properties || {};
+    const cur = node.properties.gcast_settings;
+    node.properties.gcast_settings = Object.assign({}, SETTING_DEFAULTS,
+                                                   (cur && typeof cur === "object") ? cur : {});
+    return node.properties.gcast_settings;
+  }
+
+  const setPanel = el("div", "gcast-shots gcast-set");
+  setPanel.style.display = "none";
+  document.body.append(setPanel);
+  let setOpen = false;
+
+  function paintSettings() {
+    const cfg = settings();
+    setPanel.textContent = "";
+    const head = el("div", "gcast-shots-head");
+    head.append(el("div", "gcast-shots-title", "Settings"));
+    setPanel.append(head);
+
+    const row = el("label", "gcast-set-row");
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = !!cfg.seamRef;
+    const txt = el("div", "txt");
+    txt.append(el("div", "t", "Reference video tail on continuation"));
+    txt.append(el("div", "d",
+      "Puts the same tail the guide uses into video " + (SEAM_REF_SLOT + 1)
+      + " as well, on Render all, last render, and dropping a clip on "
+      + "CONTINUE FROM. Usually holds the look and the armour better past the "
+      + "join; on some shots it darkens more instead, and it can nudge the "
+      + "camera direction."));
+    row.append(cb, txt);
+    cb.onchange = () => {
+      settings().seamRef = cb.checked;
+      commit();
+    };
+    setPanel.append(row);
+  }
+
+  function placeSet() {
+    const r = bGear.getBoundingClientRect();
+    setPanel.style.left =
+      Math.max(8, Math.min(window.innerWidth - 298, r.right - 290)) + "px";
+    setPanel.style.top = (r.bottom + 6) + "px";
+  }
+  function outsideSet(e) {
+    if (setPanel.contains(e.target) || bGear.contains(e.target)) return;
+    closeSet();
+  }
+  function closeSet() {
+    setOpen = false;
+    setPanel.style.display = "none";
+    document.removeEventListener("pointerup", outsideSet, true);
+  }
+  bGear.onclick = (e) => {
+    e.stopPropagation();
+    if (setOpen) { closeSet(); return; }
+    setOpen = true;
+    setPanel.style.display = "";
+    paintSettings(); placeSet();
+    setTimeout(() => document.addEventListener("pointerup", outsideSet, true), 0);
+  };
+
   const shotsPanel = el("div", "gcast-shots");
   shotsPanel.style.display = "none";
   document.body.append(shotsPanel);   // outside the node: a popup inside it reflows the layout
@@ -4415,6 +4689,14 @@ function buildUI(node) {
     e.stopPropagation();
     shotsOpen ? closeShots() : openShots();
   };
+  const stepShot = (d) => (e) => {
+    e.stopPropagation();
+    const p = proj();
+    if (p.idx < 0) return;
+    switchTo(p.idx + d);
+  };
+  bPrev.onclick = stepShot(-1);
+  bNext.onclick = stepShot(1);
   paintShotsBtn();
 
   /* The panel is fixed to the viewport while the button moves with the
@@ -4718,6 +5000,28 @@ function buildUI(node) {
   const snap = (v) => Math.max(32, Math.round(v / 32) * 32);
   inW.onchange = () => { st.width = snap(+inW.value || 768); render(); commit(); };
   inH.onchange = () => { st.height = snap(+inH.value || 768); render(); commit(); };
+
+  bAllRes.onclick = () => {
+    const p = proj();
+    if (p.shots.length < 2) return;
+    /* Rewrites every clip in the project, so it goes through the same .bak the
+       other list-rewriting actions use - Revert undoes it. */
+    snapProject("canvas applied to every clip");
+    stash();                                  // the clip on screen first
+    for (const sh of p.shots) {
+      if (sh && sh.state) { sh.state.width = st.width; sh.state.height = st.height; }
+    }
+    commit();
+    /* The change lands in clips that are not on screen, so without a word here
+       the button looks like it did nothing. */
+    bAllRes.textContent = `${p.shots.length} clips`;
+    bAllRes.classList.add("done");
+    clearTimeout(bAllRes._t);
+    bAllRes._t = setTimeout(() => {
+      bAllRes.textContent = "all clips";
+      bAllRes.classList.remove("done");
+    }, 1400);
+  };
 
   selLen.onchange = (v) => {
     if (v === "custom") return;

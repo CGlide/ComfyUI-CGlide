@@ -57,6 +57,35 @@ def _open_source(path):
     return p
 
 
+CHAIN_TAG = "description"
+
+
+def _read_chain(path):
+    """The source clip's chain note, or "" if it has none.
+
+    Each link carries the note the link before it wrote, so the history
+    accumulates on its own - clip 3's file ends up holding how clip 1 and
+    clip 2 were made as well as itself. Which is the point: once three clips
+    are joined into one file there is otherwise no way back to the seed that
+    produced the middle of it.
+
+    Rides on "description" rather than a tag of our own because matroska maps
+    a known set of tag names and quietly drops the rest, and losing the
+    history in silence is worse than not having it. "comment" is left alone -
+    that one is ComfyUI's workflow JSON and dragging the file back into
+    ComfyUI has to keep working.
+    """
+    try:
+        with av.open(path) as container:
+            for key in (CHAIN_TAG, CHAIN_TAG.upper()):
+                got = (container.metadata or {}).get(key)
+                if got:
+                    return str(got).strip()
+    except Exception as e:
+        print("[Glide Join] could not read the chain note from %s (%s)" % (path, e))
+    return ""
+
+
 def _load_frames(path):
     """Decode a clip to float RGB, keeping whatever bit depth it was written at.
 
@@ -67,12 +96,8 @@ def _load_frames(path):
     it stacks once per link. rgb48le is simply the nearest format wide enough
     to hold the 10 bits intact; the top bits are padding.
 
-    Costs one decode buffer at 2 bytes a sample instead of 1, briefly. The
-    float32 tensor it becomes is the same size either way, and that is the
-    one that grows with the length of the chain.
-
-    Falls back to rgb24 if the build cannot give rgb48le, so an unusual
-    ffmpeg degrades to the old behaviour rather than failing the join.
+    Falls back to rgb24 if the build cannot give rgb48le, so an unusual ffmpeg
+    degrades to the old behaviour rather than failing the join.
     """
     frames = []
     depth = 65535.0
@@ -281,8 +306,8 @@ class CSGlideJoin:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "AUDIO", "INT")
-    RETURN_NAMES = ("images", "audio", "frame_count")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "INT", "STRING")
+    RETURN_NAMES = ("images", "audio", "frame_count", "chain")
     FUNCTION = "join"
     CATEGORY = "CGlide"
     DESCRIPTION = ("Join a continuation onto the clip it continued from, matching the "
@@ -413,9 +438,10 @@ class CSGlideJoin:
         if not (source_video or "").strip():
             print("[Glide Join] no source clip - passing %d frames through "
                   "unchanged (not a continuation)" % images.shape[0])
-            return (images, audio, int(images.shape[0]))
+            return (images, audio, int(images.shape[0]), "")
 
         path = _open_source(source_video)
+        chain = _read_chain(path)
         src = _load_frames(path)
         ov = max(0, int(overlap_frames))
 
@@ -432,7 +458,7 @@ class CSGlideJoin:
         print("[Glide Join] %s: %d + %d frames, overlap %d -> %d frames (%.3fs)"
               % (seam_mode, src.shape[0], images.shape[0], ov,
                  out.shape[0], out.shape[0] / float(fps)))
-        return (out, out_audio, int(out.shape[0]))
+        return (out, out_audio, int(out.shape[0]), chain)
 
     @classmethod
     def IS_CHANGED(cls, source_video, **kwargs):

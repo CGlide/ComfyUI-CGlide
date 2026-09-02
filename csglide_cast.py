@@ -466,8 +466,13 @@ def _load_audio(ref, start, end):
     if b <= a:
         raise ValueError("H3 Studio: audio trim for %s is empty." % ref)
     waveform = waveform[..., a:b]
+    # H3 packs exactly two audio channels. pack_audio() emits channels * T rows
+    # while PackedLayout reserves T * 2, so anything but stereo makes the two
+    # disagree and the mismatch only surfaces inside the sampler.
     if waveform.shape[0] == 1:
         waveform = waveform.repeat(2, 1)
+    elif waveform.shape[0] > 2:
+        waveform = waveform[:2].contiguous()
     return {"waveform": waveform[None, ...], "sample_rate": int(sr)}
 
 
@@ -753,12 +758,137 @@ class CSGlideCast:
         }
 
     RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT",
-                    "STRING", "IMAGE")
+                    "STRING", "IMAGE", "CONDITIONING")
     RETURN_NAMES = ("positive", "latent", "width", "height", "length", "seconds",
-                    "overlap_frames", "source_video", "guide_frames")
+                    "overlap_frames", "source_video", "guide_frames",
+                    "positive_refine")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
+
+    # ---------------- conditioning variants ----------------
+
+    @staticmethod
+    def _without_keyframes(cond):
+        """The same conditioning minus the keyframe block.
+
+        A keyframe is encoded at the canvas, and the model reserves target rows
+        for it from the TARGET latent's shape: `all_video_rows[~img_update] =
+        cond_video_rows`. Feed the same conditioning to a second sampler running
+        on an upscaled latent and those two disagree - 1344x768 gives one row
+        count, 1920x1088 another - and the assignment raises a broadcast error
+        before the first step. That is what a latent upscaler between two
+        samplers does: same guider, bigger latent.
+
+        References are NOT stripped. They carry their own spatial shape and the
+        layout allocates from that, so they survive a resolution change - a
+        clip with references and no continuation refines fine today, which is
+        the evidence for leaving them alone.
+
+        Dropping the anchor for a refine pass costs nothing real: the guide's
+        job is to place the continuation at the seam, and that is decided in the
+        first pass. A low-sigma refine is detail work on frames already
+        committed.
+        """
+        out = []
+        for item in cond:
+            meta = dict(item[1]) if len(item) > 1 and isinstance(item[1], dict) else {}
+            meta.pop("minimax_keyframes", None)
+            meta.pop("minimax_frame_count", None)
+            out.append([item[0], meta])
+        return out
+
+    @staticmethod
+    def _audit_audio(cond, latent=None):
+        """Check the audio row budget here, where the blocks still have names.
+
+        PackedLayout reserves cond-audio rows from `ref_audio_t` (references) and
+        from `audio_latent.shape[-1]` (keyframes), then fills them with
+        `pack_audio()`, which emits `channels * T` rows. Two ways those can
+        disagree: a declared length that is not the tensor's length, or a latent
+        that is not stereo. Either one surfaces inside the sampler as
+        `all_audio_rows[~audio_update] = cond_audio_rows` failing to broadcast,
+        with nothing in the message saying which slot did it.
+
+        The order matters as much as the totals: the layout packs keyframe audio
+        first, then reference audio in list order, and model_base builds
+        cond_audio_latents the same way. This walks them in that same order so
+        the printed line reads as the packed sequence does.
+        """
+        meta = {}
+        if cond and len(cond[0]) > 1 and isinstance(cond[0][1], dict):
+            meta = cond[0][1]
+
+        # How many audio latent frames this shot actually has room for. Every
+        # reference frame past it is conditioning the model with audio the clip
+        # cannot use.
+        grid = 0
+        try:
+            grid = int(latent["samples"].tensors[1].shape[-1])
+        except Exception:
+            grid = 0
+
+        reserved = filled = 0
+        report = []
+        overlong = []
+
+        def account(label, declared, latent):
+            ch = int(latent.shape[2])
+            t = int(latent.shape[-1])
+            if ch != 2:
+                raise ValueError(
+                    "H3 Studio: %s encoded to %d audio channel(s); H3 packs stereo. "
+                    "Re-export that file as stereo, or leave its sound off."
+                    % (label, ch))
+            if declared != t:
+                raise ValueError(
+                    "H3 Studio: %s declares %d audio latent frames but holds %d. "
+                    "The model would reserve %d rows and get %d."
+                    % (label, declared, t, declared * 2, ch * t))
+            report.append("%s %d" % (label, t))
+            return declared * 2, ch * t
+
+        for i, kf in enumerate(meta.get("minimax_keyframes") or []):
+            al = kf.get("audio_latent")
+            if al is None:
+                continue
+            label = ("continuation guide" if kf.get("resolved_frame_index") == 0
+                     else "keyframe %d" % (i + 1))
+            r, f = account(label, int(al.shape[-1]), al)
+            reserved += r
+            filled += f
+
+        for i, blk in enumerate(meta.get("minimax_refs") or []):
+            al = blk.get("audio_latent")
+            if al is None or not blk.get("ref_audio_t"):
+                continue
+            label = "%s ref %d" % (blk.get("kind", "?"), i + 1)
+            r, f = account(label, int(blk["ref_audio_t"]), al)
+            reserved += r
+            filled += f
+            # A reference several times longer than the shot has been linked to
+            # a sampler crash (issue #8: ~51s of reference audio against a 9.4s
+            # clip). The threshold is not a measured limit -- it sits between a
+            # reference that worked at 1.3x the grid and one that crashed at
+            # 5.4x -- so this warns and renders rather than refusing.
+            if grid and int(al.shape[-1]) > grid * 3:
+                overlong.append((label, int(al.shape[-1])))
+
+        if report:
+            print("[H3 Studio] audio latent frames: " + ", ".join(report)
+                  + "  ->  %d cond rows" % filled)
+        for label, t in overlong:
+            print("[H3 Studio] WARNING: %s is %.1fs of audio against a %.1fs "
+                  "clip. Only the first %.1fs can be used, and references this "
+                  "long have been linked to a sampler crash. Trim it closer to "
+                  "the clip length."
+                  % (label, t / float(AUDIO_LATENT_FPS),
+                     grid / float(AUDIO_LATENT_FPS),
+                     grid / float(AUDIO_LATENT_FPS)))
+        if reserved != filled:
+            raise ValueError(
+                "H3 Studio: audio conditioning would reserve %d rows and fill %d. "
+                "Report this line with the render settings." % (reserved, filled))
 
     # ---------------- reference encoding ----------------
 
@@ -924,20 +1054,43 @@ class CSGlideCast:
             print("[H3 Studio] continue: shape report unavailable (%s)" % e)
 
         if cont["audio"]:
-            # end=None: to EOF, so the carried sound finishes where the
-            # picture does rather than at a duration the browser rounded
-            track = _load_video_soundtrack(cont["file"], cont["start"], None)
+            # end=None: to EOF, so the carried sound finishes on the clip's last
+            # sample rather than at a duration the browser rounded
+            # half a second of slack before the window start: the picture run is
+            # taken BY POSITION (last n frames) while the trim start is a browser
+            # timestamp, so start..EOF can be a frame or two short of the run and
+            # the carried sound would stop before the seam does
+            track = _load_video_soundtrack(
+                cont["file"], max(0.0, cont["start"] - 0.5), None)
             if track is None:
                 print("[H3 Studio] continue: %s has no soundtrack, picture only"
                       % cont["file"])
             else:
+                # WINDOW THE SOUND THE WAY THE PICTURE IS WINDOWED. The guide is
+                # the LAST n frames of the file; this used to hand the model
+                # everything from `start` to EOF, which on an untouched trim is the
+                # whole clip - up to the entire target audio grid as conditioning,
+                # then cropped from the FRONT by max_rt. So the carried sound was
+                # the head of the clip while the picture was its tail.
+                sr = int(track["sample_rate"])
+                wf = track["waveform"]
+                keep = max(1, int(round(n / FPS * sr)))
+                if wf.shape[-1] > keep:
+                    wf = wf[..., -keep:].contiguous()
+                track = {"waveform": wf, "sample_rate": sr}
+
                 audio_latent, audio_rt = self._encode_ref_audio(audio_vae, track)
                 # anchored at frame 0, so the whole of this clip's audio grid is
-                # available; crop only if the window somehow overruns it
+                # available; a window this short can only overrun it if the file
+                # misreported its rate, and then the TAIL is the half to keep
                 max_rt = int(latent["samples"].tensors[1].shape[-1])
                 if audio_rt > max_rt:
-                    audio_latent = audio_latent[..., :max_rt].clone()
+                    audio_latent = audio_latent[..., -max_rt:].clone()
                 keyframe["audio_latent"] = audio_latent
+                print("[H3 Studio] continue: guide audio %.3fs -> %d latent frames "
+                      "(grid holds %d)"
+                      % (wf.shape[-1] / float(sr),
+                         int(audio_latent.shape[-1]), max_rt))
 
         print("[H3 Studio] continue: %d frames from %s at frame 0%s, overlap %d"
               % (n, cont["file"],
@@ -962,11 +1115,12 @@ class CSGlideCast:
                 keyframes.append(guide)
                 cond = node_helpers.conditioning_set_values(
                     cond, {"minimax_keyframes": keyframes})
+            self._audit_audio(cond, latent)
             source = ""
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
             return (cond, latent, width, height, frame_count, seconds, overlap,
-                    source, guide_frames)
+                    source, guide_frames, self._without_keyframes(cond))
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
