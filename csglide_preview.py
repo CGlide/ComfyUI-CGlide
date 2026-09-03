@@ -26,6 +26,7 @@ only changes how previews are drawn.
 """
 
 import base64
+import inspect
 import io
 import math
 
@@ -35,6 +36,12 @@ import torch.nn.functional as F
 from PIL import Image
 
 import latent_preview
+
+try:
+    import comfy.patcher_extension
+    from comfy.patcher_extension import WrappersMP
+except Exception:
+    WrappersMP = None
 
 try:
     import folder_paths
@@ -66,6 +73,12 @@ _CONF = {
     "max_resolution": 512,
     "decoder": "latent2rgb",
 }
+
+# True only while the sampling wrapper is running. The wrapper starts after
+# get_previewer has already handed out a previewer, so the previewer asks this
+# on every call rather than being chosen up front -- bypass the node and the
+# old path simply takes over again.
+_LIVE = {"wrapper": False}
 
 FPS = 24.0
 
@@ -281,6 +294,8 @@ class FilmstripPreviewer(latent_preview.LatentPreviewer):
         self.calls = 0
         self.last = None
         self.tae_failed = False     # one complaint per run, then fall back quietly
+        self.sent = False           # something has been pushed to the node this run
+        self.render_failed = False
 
     def _rgb(self, plane):
         """[C, H, W] latent -> [H, W, 3] in roughly -1..1."""
@@ -311,6 +326,73 @@ class FilmstripPreviewer(latent_preview.LatentPreviewer):
                 self.tae_failed = True
                 print("[Glide Preview] TAE decode failed (%s) -- using latent2rgb" % e)
         return [self._rgb(x[:, t]) for t in idx]
+
+    def _sheet(self, tiles):
+        """Tile the frames into one still."""
+        cols = max(1, min(int(_CONF["columns"]), len(tiles)))
+        rows = math.ceil(len(tiles) / cols)
+        blank = torch.zeros_like(tiles[0])
+        strips = []
+        for r in range(rows):
+            row = tiles[r * cols:(r + 1) * cols]
+            row = row + [blank] * (cols - len(row))
+            strips.append(torch.cat(row, dim=1))    # along width
+        return torch.cat(strips, dim=0)             # along height
+
+    # ---- wrapper path ----
+
+    def render(self, x0, latent_shapes=None):
+        """Draw from inside the sampling stack.
+
+        The wrapper calls this instead of going through ComfyUI's previewer
+        slot, so accelerators that wrap sampling themselves cannot swallow the
+        callback stream. Both modes land on this node's widget.
+        """
+        self.calls += 1
+        every = max(1, int(_CONF["every_n_steps"]))
+        if self.sent and (self.calls - 1) % every != 0:
+            return
+
+        if self.reshape is not None:
+            try:
+                x0 = self.reshape(x0)
+            except Exception:
+                pass
+        x0 = _unpack(x0, latent_shapes)
+        if x0.ndim != 5:
+            return
+
+        x = x0[0]                                   # [C, T, H, W]
+        chans = self.factors.shape[1]
+        if x.shape[0] > chans:
+            x = x[:chans]
+
+        total = x.shape[1]
+        duration_s = _output_frames(total) / FPS
+        want = int(round(_CONF["fps"] * duration_s))
+        idx = _pick(total, max(1, min(total, want)))
+        tiles = self._tiles(x, idx)
+        if _CONF["mode"] != "animated":
+            tiles = [self._sheet(tiles)]
+
+        self._send_animation(tiles, total)
+        self.sent = True
+
+    def _still(self, x0):
+        """One middle frame, latent2rgb only. For the sampler's own slot while
+        the wrapper is drawing the real preview on the node."""
+        if self.reshape is not None:
+            try:
+                x0 = self.reshape(x0)
+            except Exception:
+                pass
+        if x0.ndim != 5:
+            return latent_preview.preview_to_image(self._rgb(x0[0]))
+        x = x0[0]
+        chans = self.factors.shape[1]
+        if x.shape[0] > chans:
+            x = x[:chans]
+        return latent_preview.preview_to_image(self._rgb(x[:, x.shape[1] // 2]))
 
     def decode_latent_to_preview(self, x0):
         self.calls += 1
@@ -401,6 +483,13 @@ class FilmstripPreviewer(latent_preview.LatentPreviewer):
             print("[Glide Preview] could not send animation: %s" % e)
 
     def decode_latent_to_preview_image(self, preview_format, x0):
+        if _LIVE["wrapper"]:
+            # the wrapper already drew this shot on the node; decoding it a
+            # second time for the sampler slot would just double the cost
+            if not _CONF["sampler_preview"]:
+                return None
+            return ("JPEG", self._still(x0), int(_CONF["max_resolution"]))
+
         img = self.decode_latent_to_preview(x0)
         if _CONF["mode"] == "animated" and not _CONF["sampler_preview"]:
             # the animation is already on this node; a still on the sampler as
@@ -408,6 +497,85 @@ class FilmstripPreviewer(latent_preview.LatentPreviewer):
             # preview this update", which the progress bar handles.
             return None
         return ("JPEG", img, int(_CONF["max_resolution"]))
+
+
+def _unpack(x0, latent_shapes):
+    """Rebuild a video latent from a flattened pack.
+
+    H3 samples one packed audio+video latent. Most paths hand the callback a
+    normal 5D tensor, but latent_shapes is the authority on what the pack is
+    meant to be, so use it whenever what arrives is not already 5D.
+    """
+    if x0.ndim == 5 or not latent_shapes:
+        return x0
+    flat = x0.reshape(x0.shape[0], -1)
+    for shape in latent_shapes:
+        dims = [int(d) for d in shape]
+        if len(dims) < 4:
+            continue
+        dims = dims[-4:]                            # [C, T, H, W]
+        want = 1
+        for d in dims:
+            want *= d
+        if flat.shape[1] >= want:
+            return flat[:, :want].reshape([x0.shape[0]] + dims)
+    return x0
+
+
+_WRAPPER_KEY = "csglide_preview"
+
+
+def _outer_sample_wrapper(executor, *args, **kwargs):
+    """Sits on the model patcher, so it runs INSIDE anything else that wraps
+    sampling.
+
+    ComfyUI builds its preview callback outside every wrapper. A two-pass
+    accelerator -- Spectrum with offline replay, for one -- does the real
+    transformer work in its first pass and replays the schedule in the second,
+    so that outer callback only fires during the replay and the whole preview
+    arrives at once, seconds before the run ends. Wrapping the callback here
+    puts it back on the pass that is actually denoising.
+    """
+    if not _CONF["enabled"]:
+        return executor(*args, **kwargs)
+
+    try:
+        bound = inspect.signature(executor.original).bind(*args, **kwargs)
+        bound.apply_defaults()
+    except Exception as e:
+        print("[Glide Preview] cannot read the sampling signature (%s) -- preview off" % e)
+        return executor(*args, **kwargs)
+
+    try:
+        latent_format = executor.class_obj.model_patcher.model.latent_format
+    except Exception as e:
+        print("[Glide Preview] no latent format on the guider (%s) -- preview off" % e)
+        return executor(*args, **kwargs)
+
+    if not (_is_h3(latent_format)
+            and getattr(latent_format, "latent_rgb_factors", None) is not None):
+        return executor(*args, **kwargs)
+
+    previewer = FilmstripPreviewer(latent_format)
+    inner = bound.arguments.get("callback")
+    latent_shapes = bound.arguments.get("latent_shapes")
+
+    def callback(step, x0, x, total_steps):
+        try:
+            previewer.render(x0, latent_shapes)
+        except Exception as e:
+            if not previewer.render_failed:
+                previewer.render_failed = True
+                print("[Glide Preview] render failed (%s) -- previews off for this run" % e)
+        if inner is not None:
+            return inner(step, x0, x, total_steps)
+
+    bound.arguments["callback"] = callback
+    _LIVE["wrapper"] = True
+    try:
+        return executor(*bound.args, **bound.kwargs)
+    finally:
+        _LIVE["wrapper"] = False
 
 
 def _install():
@@ -517,7 +685,23 @@ class CSGlidePreview:
             "decoder": decoder,
         })
         _install()
-        return (model,)
+
+        # Registering here rather than patching only get_previewer means the
+        # preview rides inside any accelerator that wraps sampling. Wrappers
+        # run in registration order, outermost first, so keeping this node
+        # DOWNSTREAM of an accelerator is what puts the preview inside it.
+        if WrappersMP is None or not _CONF["enabled"]:
+            return (model,)
+        try:
+            out = model.clone()
+            if _WRAPPER_KEY not in out.wrappers.get(WrappersMP.OUTER_SAMPLE, {}):
+                out.add_wrapper_with_key(
+                    WrappersMP.OUTER_SAMPLE, _WRAPPER_KEY, _outer_sample_wrapper)
+            return (out,)
+        except Exception as e:
+            print("[Glide Preview] could not register the sampling wrapper (%s) "
+                  "-- using the preview hook instead" % e)
+            return (model,)
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
