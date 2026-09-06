@@ -655,8 +655,89 @@ const CSS = `
    and nothing below it moves.
    Source order matters here: same specificity as the 16/9 rule above, so this
    has to come AFTER it or it never applies. */
-.gcast-grid.med4 .gcast-thumb { aspect-ratio:4/3; }
-.gcast-grid.fl3 .gcast-thumb { aspect-ratio:6/5; }
+.gcast-grid.med4 .gcast-thumb { aspect-ratio:16/9; }
+.gcast-grid.fl3 .gcast-thumb { aspect-ratio:16/9; }
+
+/* project timeline ----------------------------------------------------
+   The whole film across the top of the node: one block per clip, width in
+   proportion to its real length - honestly, so the ruler above means what it
+   says. A short clip really is a narrow block; zoom in to work with it.
+   Colour comes from the clip's id rather than its position, so a block keeps
+   its colour when the film is reordered and can be followed while dragging. */
+.gcast-tl { display:flex; flex-direction:column; gap:2px; }
+.gcast-tl.off { display:none; }
+.gcast-tl .head { display:flex; align-items:flex-end; gap:5px; }
+.gcast-tl .tools { display:flex; gap:3px; flex:0 0 auto; padding-bottom:1px; }
+.gcast-tl .tools button { width:17px; height:15px; padding:0; display:grid;
+  place-items:center; background:var(--h3-well); color:var(--h3-dim);
+  border:1px solid var(--h3-line); border-radius:4px; cursor:pointer;
+  transition:color .12s ease, border-color .12s ease; }
+.gcast-tl .tools button:hover:not(:disabled) { color:var(--h3-txt); border-color:var(--h3-accent); }
+.gcast-tl .tools button:disabled { opacity:.35; cursor:default; }
+.gcast-tl .tools button.danger:hover:not(:disabled) { color:#ff8a8a; border-color:#ff8a8a; }
+.gcast-tl .tools svg { width:9px; height:9px; fill:none; stroke:currentColor;
+  stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+/* a block too narrow for a label shows none rather than a clipped one */
+.gcast-tl .clip.tiny { padding:0 2px; }
+.gcast-tl .clip.tiny .nm, .gcast-tl .clip.tiny .du { display:none; }
+.gcast-tl .clip input { width:100%; box-sizing:border-box; font-size:10px;
+  padding:1px 3px; border-radius:3px; border:1px solid var(--h3-accent);
+  background:rgba(0,0,0,.6); color:#fff; outline:none; }
+/* The ruler is a pan surface as well as a scale. Once the strip overflows
+   there is no empty track left to grab -- every pixel of it is a block --
+   so without this the only way to scroll a long film is the wheel. */
+.gcast-tl .rule { position:relative; height:10px; overflow:hidden;
+  touch-action:none; flex:1 1 auto; min-width:0; }
+.gcast-tl .rule.pannable { cursor:grab; }
+.gcast-tl .rule.panning { cursor:grabbing; }
+.gcast-tl .rule .t { position:absolute; bottom:0; width:1px; height:3px;
+  background:var(--h3-dim); opacity:.32; }
+.gcast-tl .rule .t.maj { height:6px; opacity:.65; }
+.gcast-tl .rule .lbl { position:absolute; top:0; margin-left:3px; line-height:1;
+  font-family:ui-monospace,Consolas,monospace; font-size:8px; color:var(--h3-dim);
+  opacity:.75; }
+.gcast-tl .view { position:relative; height:36px; overflow:hidden; border-radius:7px;
+  background:var(--h3-well); box-shadow:inset 0 1px 3px rgba(0,0,0,.38);
+  touch-action:none; }
+.gcast-tl .view.pannable { cursor:grab; }
+.gcast-tl .view.panning { cursor:grabbing; }
+/* panned by left, not by transform: a transformed layer inside the canvas
+   zoom is rasterised at one scale and composited at another, which is what
+   put the prompt colouring a letter out. Nothing here has to line up with a
+   caret, but the text would still soften for no gain. */
+.gcast-tl .strip { position:absolute; top:0; bottom:0; }
+.gcast-tl .clip { position:absolute; top:0; bottom:0; border-radius:6px;
+  box-sizing:border-box; padding:0 7px; overflow:hidden; cursor:pointer;
+  display:flex; flex-direction:column; justify-content:center; gap:1px;
+  /* A dark ramp off the left edge of every block. With the colours keyed to
+     clip identity two neighbours can now draw the same colour, and a shared
+     edge between two flat fills is invisible. The ramp makes each block start
+     dark and open out, so the boundary reads even when the colour does not.
+     The colour itself is passed in as --c. */
+  background:linear-gradient(90deg, rgba(0,0,0,.62), rgba(0,0,0,0) 46%), var(--c, #444);
+  box-shadow:0 1px 3px rgba(0,0,0,.45);
+  /* left is transitioned so the blocks SLIDE apart to open the gap while you
+     drag. A 2px marker on top of six saturated colours was not readable, and
+     a line tells you where it lands without showing you what it will look
+     like. Repainting after the drop writes the same positions, so there is
+     no jump when the real order takes over. */
+  transition:left .15s cubic-bezier(.2,.7,.3,1), filter .12s ease, box-shadow .12s ease; }
+.gcast-tl .clip.nomove { transition:filter .12s ease, box-shadow .12s ease; }
+.gcast-tl .clip .nm { font-size:10px; line-height:1.15; color:#fff; opacity:.96;
+  text-shadow:0 1px 2px rgba(0,0,0,.55); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.gcast-tl .clip .du { font-family:ui-monospace,Consolas,monospace; font-size:8px;
+  line-height:1; color:#fff; opacity:.66; text-shadow:0 1px 2px rgba(0,0,0,.55);
+  white-space:nowrap; }
+.gcast-tl .clip:hover { filter:brightness(1.18); }
+.gcast-tl .clip.on { box-shadow:inset 0 0 0 2px var(--h3-accent), 0 2px 7px rgba(0,0,0,.55); }
+.gcast-tl .clip.on .nm { opacity:1; }
+.gcast-tl .clip.lifted { opacity:.3; }
+/* where the dragged clip would land */
+.gcast-tl .drop { position:absolute; top:-1px; bottom:-1px; width:3px; margin-left:-1.5px;
+  background:#fff; border-radius:2px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 9px rgba(255,255,255,.75);
+  pointer-events:none; z-index:3; }
 .gcast-wav { width:100%; height:34px; background:var(--h3-well); border-radius:5px; cursor:pointer;
   display:flex; align-items:center; justify-content:center; color:#525252; font-size:11px; }
 
@@ -1390,6 +1471,33 @@ function buildUI(node) {
   bar.append(nameLabel, el("div", "spacer"), bSave, bSaveAs, bPack, bLoad,
              bShots, clipNav, bGear);
 
+  /* ---- project timeline ---- */
+  const tl = el("div", "gcast-tl off");
+  const tlHead = el("div", "head");
+  const tlRule = el("div", "rule");
+  const tlTools = el("div", "tools");
+  const tlView = el("div", "view");
+  const tlStrip = el("div", "strip");
+  const tlBtn = (title, path, cls) => {
+    const b = el("button", cls || null);
+    b.title = title;
+    b.innerHTML = '<svg viewBox="0 0 12 12">' + path + "</svg>";
+    b.onclick = (e) => e.stopPropagation();
+    return b;
+  };
+  const tlZoomOut = tlBtn("Zoom out", '<path d="M2.5 6h7"/>');
+  const tlZoomIn = tlBtn("Zoom in", '<path d="M6 2.5v7M2.5 6h7"/>');
+  const tlFit = tlBtn("Fit the whole project",
+    '<path d="M1.5 3.5v-2h2M8.5 1.5h2v2M10.5 8.5v2h-2M3.5 10.5h-2v-2"/>');
+  const tlAdd = tlBtn("New clip, keeping the current references and canvas",
+    '<path d="M6 2v8M2 6h8"/>');
+  const tlDel = tlBtn("Delete the current clip",
+    '<path d="M2.5 3.5h7M4.5 3.5V2.5h3v1M3.5 3.5l.5 6h4l.5-6"/>', "danger");
+  tlTools.append(tlZoomOut, tlZoomIn, tlFit, tlAdd, tlDel);
+  tlHead.append(tlRule, tlTools);
+  tlView.append(tlStrip);
+  tl.append(tlHead, tlView);
+
   /* ---- mode bar ---- */
   const modeBar = el("div", "gcast-modebar");
   const seg = el("div", "gcast-seg");
@@ -1518,7 +1626,10 @@ function buildUI(node) {
   }
   window.addEventListener("resize", () => syncGutter());
 
-  root.append(bar, modeBar, row, flWrap, refWrap, pWrap);
+  root.append(bar, tl, modeBar, row, flWrap, refWrap, pWrap);
+  /* the strip is laid out in pixels, so it has to be re-measured whenever the
+     node is resized -- there is no CSS that can do proportional-with-a-floor */
+  if (window.ResizeObserver) new ResizeObserver(() => paintTimeline()).observe(tlView);
 
   /* ------------------------------------------------------------ slots */
 
@@ -1894,6 +2005,12 @@ function buildUI(node) {
     return d;
   }
 
+  /* How many frames a look carry keeps. The first rung of the 17k+5 ladder:
+   * enough to be a legal reference, and a look reference needs no more than
+   * one clear picture. The CONTINUE FROM guide is a different thing entirely
+   * and still takes its tested 22 - that one is anchoring motion. */
+  const LOOK_CARRY_FRAMES = 5;
+
   /* Ask the server which window of this clip best SHOWS the scene, and write it
    * into the slot's own trim. Deliberately not computed in the browser: the pick
    * has to be the same one the build would make, and it is already in Python.
@@ -1915,10 +2032,24 @@ function buildUI(node) {
         slot.spanNote = "weak";
         return null;
       }
-      slot.start = +d.start; slot.end = +d.end;
+      /* Keep the picker's MOMENT, drop its length.
+       *
+       * pick_span returns a window sized for a guide - 22 frames or more. A
+       * look carry is not a guide: it carries no timing, it is there so the
+       * next clip can see the room and the grade. Everything past the first
+       * few frames is encode time and more of the old clip pulled into the
+       * conditioning, for a picture that was already there in frame one.
+       *
+       * The half frame of slack is so that rounding on the way to Python
+       * cannot land under 5 and take the run below the shortest legal rung. */
+      const mid = (+d.start + +d.end) / 2;
+      const first = Math.max(0, Math.round(mid * FPS) - Math.floor(LOOK_CARRY_FRAMES / 2));
+      const lastStart = Math.max(0, Math.round((slot.dur || 0) * FPS) - LOOK_CARRY_FRAMES);
+      slot.start = Math.min(first, lastStart) / FPS;
+      slot.end = slot.start + (LOOK_CARRY_FRAMES + 0.5) / FPS;
       slot.spanNote = d.note || "";
       slot.spanScore = +d.score;
-      return d;
+      return { ...d, start: slot.start, end: slot.end, frames: LOOK_CARRY_FRAMES };
     } catch (err) {
       console.warn("[H3 Studio] smart span pick failed:", err);
       return null;
@@ -2439,7 +2570,7 @@ function buildUI(node) {
         dragging = false;
         try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
         document.removeEventListener("pointermove", move, true);
-        document.removeEventListener("pointerup", up, true);
+        window.removeEventListener("pointerup", up, true);
         document.removeEventListener("mousemove", moveMouse, true);
         document.removeEventListener("mouseup", up, true);
         commit();
@@ -2452,7 +2583,7 @@ function buildUI(node) {
         dragging = true;
         try { handle.setPointerCapture(e.pointerId); } catch (_) {}
         document.addEventListener("pointermove", move, true);
-        document.addEventListener("pointerup", up, true);
+        window.addEventListener("pointerup", up, true);
         document.addEventListener("mousemove", moveMouse, true);
         document.addEventListener("mouseup", up, true);
       });
@@ -2700,6 +2831,10 @@ function buildUI(node) {
   function render() {
     try { renderInner(); }
     catch (e) { console.error("[H3 Studio] render failed:", e); }
+    /* the strip reads the live state for the current clip, so a length change
+     * has to reach it here - render() is what every control calls */
+    try { paintTimeline(); }
+    catch (e) { console.error("[H3 Studio] timeline paint failed:", e); }
   }
 
   function renderInner() {
@@ -3232,7 +3367,7 @@ function buildUI(node) {
           dragging = false;
           h.classList.remove("on");
           document.removeEventListener("pointermove", move, true);
-          document.removeEventListener("pointerup", up, true);
+          window.removeEventListener("pointerup", up, true);
           writeShotTime(s, times[k + 1]);
         };
         h.addEventListener("pointerdown", (e) => {
@@ -3241,7 +3376,7 @@ function buildUI(node) {
           h.classList.add("on");
           try { h.setPointerCapture(e.pointerId); } catch (_) {}
           document.addEventListener("pointermove", move, true);
-          document.addEventListener("pointerup", up, true);
+          window.addEventListener("pointerup", up, true);
         });
       });
 
@@ -3613,6 +3748,44 @@ function buildUI(node) {
     } finally { busy(null); }
   }
 
+  /* A project is open once it holds more than one clip. At exactly one there
+   * is nothing a project file would carry that the clip file does not, so the
+   * simpler format wins. */
+  const hasProject = () => proj().shots.length > 1;
+
+  /* Which kind of file is this?
+   *
+   * The EXTENSION cannot answer it. A clip is .h3.json or .h3pack, a project
+   * is .h3proj.json or .h3proj.zip - both land as .json and .zip once anyone
+   * renames one, and both are offered by the same picker. So look inside: a
+   * project zip carries project.json, and a project's JSON has a shots array.
+   * Anything unreadable is treated as a clip, which is the older format and
+   * the one whose loader gives the better error message. */
+  async function sniffKind(file) {
+    try {
+      if (/\.(zip|h3projpack|h3pack)$/i.test(file.name)) {
+        const map = await zipRead(await file.arrayBuffer());
+        return map.has("project.json") ? "project" : "clip";
+      }
+      const d = JSON.parse(await file.text());
+      if (Array.isArray(d.shots)) return "project";
+      if (d.meta && /project/i.test(String(d.meta.app || ""))) return "project";
+      return "clip";
+    } catch (e) {
+      return "clip";
+    }
+  }
+
+  /* One Load button for both. Picks once, looks, then hands the SAME file to
+   * whichever loader owns it - so the file is never chosen twice and a
+   * project pack opened by mistake still lands in the right place. */
+  async function smartLoad() {
+    const picked = await pickFileForOpen();
+    if (!picked) return;
+    const kind = await sniffKind(picked.file);
+    return kind === "project" ? openProject(picked) : doLoad(picked);
+  }
+
   async function pickFileForOpen() {
     if (window.showOpenFilePicker) {
       try {
@@ -3688,8 +3861,8 @@ function buildUI(node) {
     return (await pickFile(".json,.h3pack,.h3projpack,.zip", true)) || [];
   }
 
-  async function doLoad() {
-    const picked = await pickFileForOpen();
+  async function doLoad(picked) {
+    if (!picked) picked = await pickFileForOpen();
     if (!picked) return;
     const { file, handle } = picked;
     busy("loading\u2026");
@@ -3736,9 +3909,12 @@ function buildUI(node) {
    * per shot loses the relationship and repeats the work. A project holds
    * the shot states together.
    *
-   * The single-shot Save / Save as / Save packed / Load buttons are NOT
-   * touched: every existing .h3.json and .h3pack keeps loading exactly as
-   * before, and a project is a separate file with its own two buttons.
+   * The top bar drives BOTH. Save / Save as / Save packed write the project
+   * when one is open and the single clip when it is not; Load looks inside
+   * the file and routes it. Every existing .h3.json and .h3pack still loads
+   * exactly as before - the formats did not change, only which button
+   * reaches them. Alt on a save forces the single-clip form, so one clip can
+   * still be pulled out of an open project.
    *
    * Shots live in node.properties, which LiteGraph serialises with the
    * workflow. A project therefore survives a browser reload without ever
@@ -3878,7 +4054,517 @@ function buildUI(node) {
     bPrev.disabled = !canStep || p.idx <= 0;
     bNext.disabled = !canStep || p.idx >= p.shots.length - 1;
     bAllRes.disabled = p.shots.length < 2;
+    /* The buttons look identical either way, so the tooltip is the only thing
+     * telling you whether Save is about to write one clip or the whole film. */
+    const many = p.shots.length > 1;
+    const alt = "  (Alt: this clip only)";
+    bSave.title = many ? "Save the project" + alt : "Save this clip";
+    bSaveAs.title = many ? "Save the project to a new file" + alt
+                         : "Save this clip to a new file";
+    bPack.title = many ? "Pack the whole project with its media into one zip" + alt
+                       : "Pack this clip with its media into one file";
+    bLoad.title = "Open a clip or a project \u2014 either file works";
+    paintTimeline();
   }
+
+  /* ================================================ project timeline ==
+   *
+   * The film across the top of the node. It is a VIEW over the project, not
+   * a second copy of it: every block is drawn from p.shots on each paint and
+   * every edit goes through the same functions the panel list uses, so the
+   * two can never disagree.
+   *
+   * It is NOT an editor. A clip's length comes off the 17k+5 ladder, so a
+   * block cannot be dragged to an arbitrary duration the way a real NLE
+   * would suggest - which is exactly the expectation to design against.
+   */
+  const TL_TICKS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  const TL_ZOOM_MAX = 40;
+  let tlZoom = 1;             // 1 = the whole project fits the node
+  let tlPan = 0;              // px scrolled from the left
+  let tlPanTo = 0;            // where the wheel wants it; tlPan eases to this
+  let tlPanRaf = 0;
+  let tlLay = null;           // last layout: { pps, width, view, blocks }
+  let tlDragEnd = 0;          // timestamp, so a release does not read as a click
+  let tlSig = "";             // what the blocks currently on screen represent
+
+  const tlSecs = (state) =>
+    Math.max(0.001, (alignFrames((state && state.length) || 56) - 1) / FPS);
+
+  /* The clip you are editing is read from the LIVE state, not from its saved
+   * copy in the project. shots[i].state is only rewritten when you switch
+   * away, so changing the length used to do nothing to the strip until you
+   * selected another clip and came back. */
+  const tlShotSecs = (sh, i) => tlSecs(i === proj().idx ? st : sh.state);
+
+  /* Colour follows the CLIP, not its position. Keying it off the index meant
+   * every block repainted a different colour the moment anything moved -
+   * including the one under the pointer, mid-drag. A clip you are dragging
+   * has to stay the same colour or there is nothing to follow. */
+  function tlColour(sh, i) {
+    const key = (sh && sh.id) || ("i" + i);
+    let h = 0;
+    for (let n = 0; n < key.length; n++) h = (h * 31 + key.charCodeAt(n)) >>> 0;
+    return SHOT_COLOURS[h % SHOT_COLOURS.length];
+  }
+
+  /* The canvas zoom is a CSS transform, so getBoundingClientRect() and
+   * clientX come back SCALED while tlPan, block x and block w are all layout
+   * pixels. Every screen-space delta has to be divided by this before it
+   * touches the strip's own coordinates, or a drag is only correct at 1:1 -
+   * which is exactly how it behaved: fine zoomed in, off everywhere else.
+   * offsetWidth is the unscaled twin of rect.width, so their ratio IS the
+   * zoom, whatever the frontend is doing to get it. */
+  function tlScale() {
+    const w = tlView.offsetWidth;
+    if (!w) return 1;
+    const r = tlView.getBoundingClientRect().width / w;
+    return r > 0.01 && r < 100 ? r : 1;
+  }
+
+  const tlTime = (t) => {
+    const m = Math.floor(t / 60), sec = Math.round(t % 60);
+    return sec === 60 ? (m + 1) + ":00" : m + ":" + String(sec).padStart(2, "0");
+  };
+
+  /* Pixels per second: fit the whole film if it can, otherwise wide enough
+   * that the SHORTEST clip still holds a label, and pan for the rest. Fitting
+   * unconditionally would turn a 2s clip in a 4min project into three pixels. */
+  function tlLayout() {
+    const p = proj();
+    const view = tlView.clientWidth || 0;
+    if (!view || !p.shots.length) { tlLay = null; return null; }
+    const secs = p.shots.map(tlShotSecs);
+    const total = secs.reduce((a, b) => a + b, 0) || 1;
+    /* Straight proportion, times the zoom. It used to be
+     *   max(fit, MIN_WIDTH / shortestClip)
+     * so that a short clip stayed clickable - which meant the SHORTEST clip
+     * set the scale for the whole film, and editing its length resized every
+     * other block on the strip. That crutch existed because there was no
+     * zoom. There is now, so the ruler and the blocks can just agree. */
+    const pps = (view / total) * tlZoom;
+    let x = 0;
+    const blocks = secs.map((sec, i) => {
+      const b = { i, x, w: sec * pps, sec };
+      x += b.w;
+      return b;
+    });
+    const width = x;
+    tlPan = Math.max(0, Math.min(tlPan, Math.max(0, width - view)));
+    tlPanTo = Math.max(0, Math.min(tlPanTo, Math.max(0, width - view)));
+    tlLay = { pps, width, view, total, blocks };
+    return tlLay;
+  }
+
+  /* Zoom about a fixed point: whatever second sits under `anchor` (a layout-
+   * space x inside the view) is still under it afterwards. Zooming about the
+   * left edge instead makes the strip feel like it is running away. */
+  function tlSetZoom(z, anchor) {
+    const L = tlLay;
+    const nz = Math.max(1, Math.min(TL_ZOOM_MAX, z));
+    if (!L || Math.abs(nz - tlZoom) < 1e-6) return;
+    const t = (tlPan + anchor) / L.pps;          // seconds under the anchor
+    tlZoom = nz;
+    const nl = tlLayout();
+    if (nl) tlPanNow(Math.max(0, Math.min(t * nl.pps - anchor,
+                                          Math.max(0, nl.width - nl.view))));
+    paintTimeline();
+    paintTlTools();
+  }
+
+  function paintTlTools() {
+    tlZoomOut.disabled = tlZoom <= 1.0001;
+    tlZoomIn.disabled = tlZoom >= TL_ZOOM_MAX - 1e-6;
+    tlFit.disabled = tlZoom <= 1.0001 && tlPan === 0;
+    tlDel.disabled = proj().shots.length < 2;
+  }
+
+  tlZoomOut.onclick = (e) => { e.stopPropagation();
+    tlSetZoom(tlZoom / 1.6, (tlLay ? tlLay.view : 0) / 2); };
+  tlZoomIn.onclick = (e) => { e.stopPropagation();
+    tlSetZoom(tlZoom * 1.6, (tlLay ? tlLay.view : 0) / 2); };
+  tlFit.onclick = (e) => { e.stopPropagation();
+    tlZoom = 1; tlPanNow(0); paintTimeline(); paintTlTools(); };
+  tlAdd.onclick = (e) => { e.stopPropagation(); addShot(false); };
+  tlDel.onclick = (e) => { e.stopPropagation();
+    const p = proj(); if (p.idx >= 0) delShot(p.idx); };
+
+  /* Wheel panning glides instead of teleporting.
+   *
+   * Applying a notch in one frame moves the strip 90px between two paints,
+   * which reads as jumping from position to position rather than scrolling -
+   * there is nothing in between for the eye to follow. Notches accumulate
+   * into a target and the strip runs to it over a few frames instead.
+   *
+   * 0.32 a frame is a little over 4 frames to cover 90% of the distance:
+   * quick enough that it never feels like waiting, continuous enough to read
+   * as motion. Every other way of moving the strip - drag, zoom, fit - sets
+   * the target to wherever it just went, so nothing fights the glide. */
+  function tlGlide() {
+    tlPanRaf = 0;
+    const d = tlPanTo - tlPan;
+    if (Math.abs(d) < 0.5) { tlPan = tlPanTo; paintTimeline(); return; }
+    tlPan += d * 0.32;
+    paintTimeline();
+    tlPanRaf = requestAnimationFrame(tlGlide);
+  }
+
+  /* Anything that moves the strip directly calls this, so a glide in flight
+   * does not drag it back to where the wheel was heading. */
+  function tlPanNow(v) {
+    tlPan = v;
+    tlPanTo = v;
+    if (tlPanRaf) { cancelAnimationFrame(tlPanRaf); tlPanRaf = 0; }
+  }
+
+  function paintTimeline() {
+    const p = proj();
+    /* One clip is not a film. The strip would say nothing a single block can
+     * not, and it would cost height on every node that never opens a project. */
+    const show = p.shots.length > 1;
+    tl.classList.toggle("off", !show);
+    if (!show) return;
+
+    const L = tlLayout();
+    if (!L) return;             // no width yet; the ResizeObserver will call back
+
+    tlStrip.style.left = (-tlPan) + "px";
+    paintRule(L);
+
+    /* Rebuild the blocks only when they would come out different.
+     *
+     * Repainting unconditionally meant any stray call - a hover that nudged a
+     * layout, a resize callback - tore down every block and built it again,
+     * which is the flicker. It also made auto-panning during a drag
+     * impossible: the rebuild threw away the very element being held.
+     *
+     * Panning is deliberately NOT in the signature; it only moves the strip,
+     * which happened above. */
+    const p2 = proj();
+    const sig = [Math.round(L.pps * 100), Math.round(L.view), p.idx,
+                 p2.shots.map((sh, i) => (sh.id || i) + ":" + shotLabel(sh, i)
+                   + ":" + Math.round(tlSecs(sh.state) * 100)).join("|")].join("/");
+    if (sig === tlSig && tlStrip.children.length) return;
+    tlSig = sig;
+    tlStrip.style.width = L.width + "px";
+    tlStrip.replaceChildren();
+    L.blocks.forEach((b) => {
+      const sh = p.shots[b.i];
+      const d = el("div", "clip" + (b.i === p.idx ? " on" : ""));
+      d.style.left = b.x + "px";
+      d.style.width = Math.max(3, b.w - 2) + "px";
+      d.style.setProperty("--c", tlColour(sh, b.i) + "c4");
+      d.dataset.clip = String(b.i);
+      d.title = shotLabel(sh, b.i) + " \u2014 " + fmtSecs(b.sec)
+              + "  (double-click to rename)";
+      if (b.w < 24) d.classList.add("tiny");
+      d.append(el("div", "nm", shotLabel(sh, b.i)));
+      /* the duration is dropped rather than squeezed when the block is too
+       * narrow to hold both -- a clipped number is worse than no number */
+      if (b.w >= 74) d.append(el("div", "du", fmtSecs(b.sec)));
+      tlStrip.append(d);
+    });
+  }
+
+  /* Ruler: adaptive step, so a 12s project ticks every second and a four
+   * minute one every thirty without either turning into a grey bar. Redrawn
+   * on every pan, unlike the blocks, because which ticks are visible is
+   * exactly what panning changes. */
+  function paintRule(L) {
+    let step = TL_TICKS[TL_TICKS.length - 1];
+    for (const cand of TL_TICKS) { if (cand * L.pps >= 46) { step = cand; break; } }
+    tlRule.replaceChildren();
+    const first = Math.floor(tlPan / L.pps / step) * step;
+    const last = (tlPan + L.view) / L.pps;
+    for (let t = first; t <= last; t += step) {
+      const x = t * L.pps - tlPan;
+      if (x < 0 || x > L.view) continue;
+      const maj = Math.abs((t / step) % 5) < 1e-6;
+      const tick = el("div", "t" + (maj ? " maj" : ""));
+      tick.style.left = x + "px";
+      tlRule.append(tick);
+      /* a label near the right edge would hang off it */
+      if (maj && t > 0 && x < L.view - 34) {
+        const lb = el("div", "lbl", tlTime(t));
+        lb.style.left = x + "px";
+        tlRule.append(lb);
+      }
+    }
+    const canPan = L.width > L.view + 1;
+    tlView.classList.toggle("pannable", canPan);
+    tlRule.classList.toggle("pannable", canPan);
+    paintTlTools();
+  }
+
+  /* Where a drop lands, as an index in the list WITHOUT the dragged clip.
+   *
+   * Measuring against the full layout was the off-by-one: the block you are
+   * holding was still occupying its own width, so every midpoint past it sat
+   * one block too far right. Taking it out first makes the arithmetic the
+   * same as the array operation that follows - splice it out, splice it in.
+   */
+  function tlDropPos(px, from) {
+    if (!tlLay) return 0;
+    const rest = tlLay.blocks.filter((b) => b.i !== from);
+    let x = 0;
+    for (let k = 0; k < rest.length; k++) {
+      if (px < x + rest[k].w / 2) return k;
+      x += rest[k].w;
+    }
+    return rest.length;
+  }
+
+  /* Where every block WOULD sit if the drag were dropped now, so they can be
+   * slid there live. Same splice pair as the real move, so what you see while
+   * dragging is exactly what you get. */
+  function tlPreview(from, to) {
+    const order = tlLay.blocks.map((b) => b.i);
+    const [it] = order.splice(from, 1);
+    order.splice(to, 0, it);
+    const pos = {};
+    let x = 0;
+    order.forEach((i) => { pos[i] = x; x += tlLay.blocks[i].w; });
+    return pos;
+  }
+
+  /* Arbitrary-distance move. moveShot() steps by one and is what the panel's
+   * arrows use; this is the same bookkeeping for a drag across the strip.
+   * `to` is an index in the list with `from` already removed. */
+  function reorderShot(from, to) {
+    const p = proj();
+    if (to < 0 || to > p.shots.length - 1) { paintTimeline(); return; }
+    const cur = p.idx >= 0 ? p.shots[p.idx] : null;
+    const [it] = p.shots.splice(from, 1);
+    p.shots.splice(to, 0, it);
+    /* follow the OBJECT, not the index: whichever clip was on screen stays on
+     * screen, wherever the move put it */
+    if (cur) p.idx = p.shots.indexOf(cur);
+    shotsFocus = p.idx;
+    commit(); paintShotsBtn(); paintPresetName(); renderShots();
+  }
+
+  /* Pointer-based, not HTML5 drag: the panel swallows file drags whole to
+   * route a near-miss, and a native drag started inside it races that handler.
+   * Same capture-phase pattern as the trim handles and the image rack --
+   * LiteGraph eats the move stream from anything less. */
+  /* Grab-scroll. Bound to the MIDDLE button as well as an empty-track left
+   * drag, so a long film can be scrubbed without hunting for a gap between
+   * blocks. Middle needs its default killed in two places or the browser
+   * opens its own autoscroll ring over the node. */
+  function tlStartPan(e) {
+    const L = tlLay;
+    if (!L || L.width <= L.view + 1) return false;
+    const x0 = e.clientX, pan0 = tlPan, k = tlScale();
+    tlView.classList.add("panning");
+    tlRule.classList.add("panning");
+    /* Pointer capture as well as capture-phase document listeners: the trim
+     * handles needed both before their drag stream survived LiteGraph, and a
+     * middle-button drag is the same situation. */
+    try { tlView.setPointerCapture(e.pointerId); } catch (_) {}
+    const mv = (ev) => {
+      tlPanNow(Math.max(0, Math.min(pan0 - (ev.clientX - x0) / k, L.width - L.view)));
+      paintTimeline();
+      ev.preventDefault(); ev.stopPropagation();
+    };
+    const up = (ev) => {
+      window.removeEventListener("pointermove", mv, true);
+      window.removeEventListener("pointerup", up, true);
+      tlView.classList.remove("panning");
+      tlRule.classList.remove("panning");
+      tlDragEnd = Date.now();
+      ev.stopPropagation();
+    };
+    window.addEventListener("pointermove", mv, true);
+    window.addEventListener("pointerup", up, true);
+    e.preventDefault(); e.stopPropagation();
+    return true;
+  }
+
+  /* Chrome opens its autoscroll ring on the MOUSEDOWN default action.
+   * preventDefault on pointerdown does not reach it - the ring appears, takes
+   * the pointer stream, and the drag never arrives. This is the listener that
+   * actually stops it, and auxclick stops the paste-on-middle-click that some
+   * platforms fire on release. */
+  const tlNoAuto = (e) => {
+    if (e.button === 1) { e.preventDefault(); e.stopPropagation(); }
+  };
+  const tlNoAutoWin = (e) => {
+    if (!tlView.contains(e.target) && !tlRule.contains(e.target)) return;
+    tlNoAuto(e);
+  };
+  window.addEventListener("mousedown", tlNoAutoWin, true);
+  window.addEventListener("auxclick", tlNoAutoWin, true);
+
+  const tlRuleDown = (e) => {
+    if (!tlRule.contains(e.target)) return;
+    if (e.button !== 0 && e.button !== 1) return;
+    tlStartPan(e);
+  };
+  window.addEventListener("pointerdown", tlRuleDown, true);
+
+  /* Claimed at WINDOW CAPTURE, not on the element.
+   *
+   * The v2 frontend handles pointer input at window level and stops it there,
+   * the same way it takes the wheel - proven in an event log, which is also
+   * why the prompt box would not scroll. An element listener is simply never
+   * reached, so the drag worked on v1 and did nothing on v2. Claiming the
+   * event first, then stopping it, puts both frontends on one path.
+   *
+   * The containment test is what keeps this narrow: anything not inside the
+   * strip is passed straight through untouched. */
+  const tlDown = (e) => {
+    if (!tlView.contains(e.target)) return;
+    if (e.target.tagName === "INPUT") return;   // renaming; let the field have it
+    const L = tlLay;
+    if (!L) return;
+
+    /* middle anywhere, including on top of a block */
+    if (e.button === 1) { tlStartPan(e); return; }
+    if (e.button !== 0) return;
+
+    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    if (!hit) { tlStartPan(e); return; }
+
+    const from = Number(hit.dataset.clip);
+    const x0 = e.clientX, y0 = e.clientY;
+    let dragging = false, ghost = null, mark = null, target = from;
+    let autoRaf = 0, lastEv = e;
+
+    const place = (ev) => {
+      const r = tlView.getBoundingClientRect();
+      const px = (ev.clientX - r.left) / tlScale() + tlPan;
+      const at = tlDropPos(px, from);
+
+      /* slide every OTHER block to where it would end up. The one being
+       * dragged is left where it was and dimmed, so the gap that opens is
+       * the answer to "where does this go" rather than a line you have to
+       * read against six saturated colours. */
+      const pos = tlPreview(from, at);
+      tlStrip.querySelectorAll(".clip").forEach((elm) => {
+        const i = Number(elm.dataset.clip);
+        if (i === from) return;
+        elm.style.left = pos[i] + "px";
+      });
+      if (mark) mark.style.left = pos[from] + "px";
+
+      if (ghost) {
+        ghost.style.left = (ev.clientX + 12) + "px";
+        ghost.style.top = (ev.clientY + 12) + "px";
+      }
+      return at;
+    };
+
+    /* Auto-pan at the edges.
+     *
+     * On a project too long to fit, the end of the film is off-screen - so
+     * without this there is NO pointer position that means "put it last".
+     * Holding near an edge scrolls the strip under the drag instead.
+     *
+     * Safe only because paintTimeline() now leaves the blocks alone when
+     * nothing about them changed: a rebuild here would destroy the element
+     * being dragged. */
+    const EDGE = 46, SPEED = 13;
+    const autoStep = () => {
+      autoRaf = 0;
+      if (!dragging || !tlLay) return;
+      const r = tlView.getBoundingClientRect();
+      let d = 0;
+      if (lastEv.clientX < r.left + EDGE) d = -SPEED;
+      else if (lastEv.clientX > r.right - EDGE) d = SPEED;
+      if (d && tlLay.width > tlLay.view) {
+        const was = tlPan;
+        tlPanNow(Math.max(0, Math.min(tlPan + d, tlLay.width - tlLay.view)));
+        if (tlPan !== was) { paintTimeline(); target = place(lastEv); }
+      }
+      autoRaf = requestAnimationFrame(autoStep);
+    };
+
+    const mv = (ev) => {
+      if (!dragging) {
+        /* 5px of slack, so a click that wobbles is still a click */
+        if (Math.abs(ev.clientX - x0) < 5 && Math.abs(ev.clientY - y0) < 5) return;
+        dragging = true;
+        hit.classList.add("lifted", "nomove");   // the held block does not slide
+        mark = el("div", "drop");
+        tlStrip.append(mark);
+        /* the ghost lives on document.body, which carries none of the panel's
+         * CSS variables -- so it is styled inline, and made transparent to
+         * hit-testing or it would be the thing under the pointer */
+        ghost = document.createElement("div");
+        ghost.textContent = hit.querySelector(".nm").textContent;
+        ghost.style.cssText =
+          "position:fixed;z-index:99999;pointer-events:none;padding:4px 9px;"
+          + "border-radius:6px;font:10px system-ui,sans-serif;color:#fff;"
+          + "background:" + tlColour(proj().shots[from], from)
+          + ";box-shadow:0 4px 14px rgba(0,0,0,.6)";
+        document.body.append(ghost);
+        autoRaf = requestAnimationFrame(autoStep);
+      }
+      lastEv = ev;
+      target = place(ev);
+      ev.preventDefault(); ev.stopPropagation();
+    };
+    const up = (ev) => {
+      window.removeEventListener("pointermove", mv, true);
+      window.removeEventListener("pointerup", up, true);
+      if (autoRaf) cancelAnimationFrame(autoRaf);
+      if (ghost) ghost.remove();
+      if (mark) mark.remove();
+      hit.classList.remove("lifted", "nomove");
+      ev.stopPropagation();
+      if (dragging) {
+        tlDragEnd = Date.now();
+        reorderShot(from, target);
+      }
+    };
+    window.addEventListener("pointermove", mv, true);
+    window.addEventListener("pointerup", up, true);
+    e.preventDefault(); e.stopPropagation();
+  };
+  window.addEventListener("pointerdown", tlDown, true);
+
+  tlView.addEventListener("click", (e) => {
+    /* a release at the end of a drag arrives here as a click */
+    if (Date.now() - tlDragEnd < 250) return;
+    if (e.target.tagName === "INPUT") return;
+    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    if (!hit) return;
+    switchTo(Number(hit.dataset.clip));
+  });
+
+  /* Rename in place. Same contract as the panel list: blur or Enter commits,
+   * Escape drops it. Typed into the block itself so there is no doubt about
+   * which clip is being renamed. */
+  tlView.addEventListener("dblclick", (e) => {
+    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    if (!hit || hit.querySelector("input")) return;
+    e.preventDefault(); e.stopPropagation();
+    const i = Number(hit.dataset.clip);
+    const sh = proj().shots[i];
+    if (!sh) return;
+    const nm = hit.querySelector(".nm");
+    const inp = el("input");
+    inp.type = "text";
+    inp.value = sh.name || "";
+    inp.placeholder = "Clip " + (i + 1);
+    hit.classList.remove("tiny");        // room to type, however narrow it was
+    if (nm) nm.replaceWith(inp); else hit.append(inp);
+    inp.focus(); inp.select();
+    let closed = false;
+    const done = (keep) => {
+      if (closed) return;
+      closed = true;
+      if (keep) { sh.name = inp.value.trim(); commit(); }
+      tlSig = "";                        // force the strip to rebuild
+      paintTimeline(); renderShots();
+    };
+    inp.onblur = () => done(true);
+    inp.onkeydown = (ev) => {
+      ev.stopPropagation();              // or the node's shortcuts eat it
+      if (ev.key === "Enter") { ev.preventDefault(); done(true); }
+      if (ev.key === "Escape") { ev.preventDefault(); done(false); }
+    };
+  });
 
   /* A new shot in a film usually reuses the same cast and location, so it
    * starts from the current one. The prompt does not carry over -- except
@@ -4456,8 +5142,8 @@ function buildUI(node) {
     } finally { busy(null); }
   }
 
-  async function openProject() {
-    const picked = await pickFileForOpen();
+  async function openProject(picked) {
+    if (!picked) picked = await pickFileForOpen();
     if (!picked) return;
     busy("loading project\u2026");
     try {
@@ -4943,6 +5629,34 @@ function buildUI(node) {
   };
   window.addEventListener("wheel", onPromptWheel, { capture: true, passive: false });
 
+  /* Wheel over the timeline pans it. Same window-capture route as the prompt
+   * and the clip list: an element listener never sees this event. Only claims
+   * the wheel when the strip actually overflows, so a film that fits still
+   * zooms the graph like the rest of the panel. */
+  const onTlWheel = (e) => {
+    if (!tlView.contains(e.target) && !tlRule.contains(e.target)) return;
+    if (!tlLay) return;
+    /* Ctrl+wheel zooms, plain wheel pans - the way every NLE does it. The
+     * anchor is the pointer, converted out of screen space first. */
+    if (e.ctrlKey || e.metaKey) {
+      const r = tlView.getBoundingClientRect();
+      const anchor = Math.max(0, Math.min((e.clientX - r.left) / tlScale(), tlLay.view));
+      tlSetZoom(tlZoom * (e.deltaY < 0 ? 1.25 : 1 / 1.25), anchor);
+      e.preventDefault(); e.stopPropagation();
+      return;
+    }
+    if (tlLay.width <= tlLay.view + 1) return;
+    const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    const cap = 110;                      // his mouse sends 167 a notch
+    const d = Math.abs(raw) > cap ? Math.sign(raw) * cap : raw;
+    /* onto the TARGET, not onto tlPan: spinning the wheel three notches
+     * queues three notches of travel rather than throwing away the first two */
+    tlPanTo = Math.max(0, Math.min(tlPanTo + d, tlLay.width - tlLay.view));
+    if (!tlPanRaf) tlPanRaf = requestAnimationFrame(tlGlide);
+    e.preventDefault(); e.stopPropagation();
+  };
+  window.addEventListener("wheel", onTlWheel, { capture: true, passive: false });
+
   /* The panel's collapsed height, measured rather than guessed. Floating the
    * prompt takes it out of the flow, which would otherwise shrink the panel
    * and open a gap above it in the v2 frontend. */
@@ -4988,10 +5702,14 @@ function buildUI(node) {
     if (node.properties.gcast_prompt_big) setTimeout(() => ta.focus(), 0);
   };
 
-  bSave.onclick = () => saveOver();
-  bSaveAs.onclick = () => saveAs(false);
-  bPack.onclick = () => saveAs(true);
-  bLoad.onclick = () => doLoad();
+  /* The bar follows what is open. With a project loaded these write the whole
+   * film; with a single clip they write the clip, exactly as they always did.
+   * Alt forces the single-clip form, for pulling one clip out of a project
+   * without having to close it. */
+  bSave.onclick = (e) => (hasProject() && !e.altKey) ? saveProject(false) : saveOver();
+  bSaveAs.onclick = (e) => (hasProject() && !e.altKey) ? saveProject(true) : saveAs(false);
+  bPack.onclick = (e) => (hasProject() && !e.altKey) ? packProject() : saveAs(true);
+  bLoad.onclick = () => smartLoad();
 
   function fileForToken(token) {
     if (!token) return null;
@@ -5453,6 +6171,12 @@ function buildUI(node) {
       /* a window listener per node instance would outlive the node */
       window.removeEventListener("paste", onPaste, true);
       window.removeEventListener("wheel", onPromptWheel, true);
+      window.removeEventListener("wheel", onTlWheel, true);
+      if (tlPanRaf) cancelAnimationFrame(tlPanRaf);
+      window.removeEventListener("pointerdown", tlDown, true);
+      window.removeEventListener("pointerdown", tlRuleDown, true);
+      window.removeEventListener("mousedown", tlNoAutoWin, true);
+      window.removeEventListener("auxclick", tlNoAutoWin, true);
     },
     load,
     /* Core's route, used when the node is selected but the pointer is not over
