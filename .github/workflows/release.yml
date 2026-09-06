@@ -1,0 +1,84 @@
+name: release
+
+# Draws the version straight out of pyproject.toml, so ONE edit does both jobs:
+# publish.yml sends it to the Comfy registry, this one tags it and puts the
+# archive on the Releases page. Nothing to draft by hand.
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+  workflow_dispatch:        # lets you re-run it by hand from the Actions tab
+
+permissions:
+  contents: write           # required: creating a release writes to the repo
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read version from pyproject.toml
+        id: version
+        shell: bash
+        run: |
+          version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          # refuse anything that is not plain semver, so a typo cannot create a junk tag
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version in pyproject.toml: ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${version}" >> "${GITHUB_OUTPUT}"
+          echo "Releasing ${version}"
+
+      - name: Skip if this version is already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "${TAG} is already released - nothing to do."
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build the archive
+        if: steps.check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          # git archive only takes TRACKED files, so nothing local sneaks in
+          git archive --format=zip \
+            --prefix="ComfyUI-CGlide-v${VERSION}/" \
+            --output="dist/ComfyUI-CGlide-v${VERSION}.zip" \
+            HEAD
+
+      - name: Create the release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          # --generate-notes writes the notes from the commits since the last
+          # release, so you get something readable without keeping a notes file.
+          # Edit them afterwards on the Releases page whenever you want better.
+          gh release create "${TAG}" \
+            "dist/ComfyUI-CGlide-v${VERSION}.zip" \
+            --target "${GITHUB_SHA}" \
+            --title "CGlide ${TAG}" \
+            --generate-notes

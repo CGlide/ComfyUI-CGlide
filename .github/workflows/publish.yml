@@ -1,9 +1,15 @@
 name: Publish to Comfy registry
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths: [pyproject.toml]
+
+# So a failed publish opens an issue instead of failing quietly in a tab you
+# are not watching. This is the line that would have told you about 1.0.4.
+permissions:
+  issues: write
 
 jobs:
   publish-node:
@@ -11,6 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Comfy-Org/publish-node-action@main
+        with:
+          persist-credentials: false
+      # Pinned to a released version instead of @main: an upstream change to
+      # that action's main branch can otherwise break your publishing without
+      # you touching anything in this repo.
+      - uses: Comfy-Org/publish-node-action@0eb6cd742945443bee7f79eeddd4f732780029a1 # v1
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

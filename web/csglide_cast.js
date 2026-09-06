@@ -829,6 +829,64 @@ const CSS = `
      already grows with the node; that is the handle. */
   resize:none; width:100%; box-sizing:border-box; outline:none;
   overflow-y:auto; overscroll-behavior:contain; }
+
+/* @tag colouring in the prompt ---------------------------------------
+   A textarea STILL cannot colour a range of its own text - same wall the
+   gutter hit. So the text you read is drawn by a BACKDROP div sitting
+   exactly under the box, and the textarea's own text is made transparent.
+   The textarea keeps the caret, the selection, undo, IME, spellcheck and
+   every listener already wired to it; nothing reads or writes through the
+   backdrop, which is inert (pointer-events:none) and never focusable.
+
+   The one thing that can go wrong is the backdrop wrapping differently
+   from the textarea, which would put the visible text out of step with the
+   caret. syncHL() checks the two heights on every paint and turns the
+   whole thing off if they disagree, so the worst case is the plain white
+   prompt that was there before - never an unusable one. */
+.gcast-hl { position:absolute; overflow:hidden;
+  pointer-events:none; z-index:0; border-radius:7px; background:var(--h3-bg); }
+/* NO transform and NO will-change on this layer, deliberately. Promoting it
+   to its own composited layer - which will-change does, and clip-path can -
+   gets it rasterized at one scale and then scaled again by the canvas zoom.
+   At a fractional zoom the glyphs come out a hair off size, so the text
+   drifts sideways along each line: nothing at the left margin, a letter or
+   two by mid-line, and the caret then sits over the wrong character. It
+   looks perfect at whatever zooms happen to round clean, which is what makes
+   it confusing. Scrolling moves plain top instead - the same way the
+   textarea moves its own text. */
+.gcast-hl .inner { position:absolute; color:var(--h3-txt);
+  white-space:pre-wrap; overflow-wrap:break-word;
+  font-kerning:none; font-variant-ligatures:none; }
+.gcast-hl .tok  { color:var(--h3-accent); }
+/* an @tag that is not one of the real slot tokens - a typo, or a tag for a
+   slot that was renumbered. Same amber the Prompt check uses. */
+.gcast-hl .bad  { color:#ffcc66; text-decoration:underline dotted; text-underline-offset:2px; }
+/* COLOUR ONLY, on every one of these. The backdrop has to lay out to exactly
+   the same widths as the textarea, so nothing here may touch weight, size,
+   spacing or style - a bold [Shot 2] At 00:05.000, is wider than the plain
+   text the textarea draws underneath, and pushes the whole rest of that line
+   out from under the caret. Underline is safe: it is drawn, not measured. */
+.gcast-hl .shot { }
+/* the textarea has to sit ABOVE the backdrop or its caret and selection are
+   painted underneath it and disappear */
+/* Kerning and ligatures OFF on both sides, and this one is not cosmetic.
+   Colouring a tag wraps it in a span, and a span boundary ENDS a shaping run
+   - so the pair of letters either side of every @tag is kerned in the
+   textarea and not in the backdrop. Each one is a fraction of a pixel; at
+   the zoom levels where those fractions round the same way you see nothing,
+   and at the ones where they do not they stack up along the line until the
+   caret sits over the wrong letter. Fixing the advances makes the two agree
+   at every zoom. At 12px in this face there is nothing to see in the
+   letters themselves. */
+textarea.gcast-hl-ta { position:relative; z-index:1;
+  font-kerning:none; font-variant-ligatures:none; }
+/* caret-color is not optional here: it defaults to currentColor, so a
+   transparent text colour takes the caret with it */
+textarea.gcast-hl-ta.hlon { background:transparent; color:transparent;
+  caret-color:var(--h3-txt); }
+textarea.gcast-hl-ta.hlon::placeholder { color:var(--h3-label); }
+/* translucent, so the coloured text behind it stays readable while selected */
+textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 /* preset bar + dialogs ------------------------------------------------ */
 /* The header row carries the two things looked at most - which clip this is,
    and how to get to another one - so it sits a size up from the cards below
@@ -1420,7 +1478,14 @@ function buildUI(node) {
   const gutter = el("div", "gcast-gutter");
   const gutterInner = el("div", "inner");
   gutter.append(gutterInner);
+  const hl = el("div", "gcast-hl");
+  /* Fractional, unrounded, and unaffected by the canvas zoom transform.
+   * Filled by the ResizeObserver below; 0 until it first fires. */
+  let taContentW = 0;
+  const hlInner = el("div", "inner");
+  hl.append(hlInner);
   const ta = el("textarea");
+  ta.classList.add("gcast-hl-ta");
   ta.placeholder = "Describe the clip. Click a reference above to drop its @tag in.";
   const sHead = el("div", "gcast-phead");
   sHead.append(el("div", "gcast-label", "Prompt check"));
@@ -1430,14 +1495,26 @@ function buildUI(node) {
   const pres = el("div", "gcast-pres");
   pWrap.append(pHead, chips, shotbar, ta, sHead, speech, presLabel, pres);
   pWrap.append(gutter);
+  pWrap.append(hl);
   ta.style.paddingLeft = "17px";          // room for the gutter bar
   /* Only needed on the fallback path; the scroll timeline handles it natively. */
-  ta.addEventListener("scroll", () => { if (!SCROLL_DRIVEN) paintGutterBars(); },
-                      { passive: true });
+  ta.addEventListener("scroll", () => {
+    if (!SCROLL_DRIVEN) paintGutterBars();
+    scrollHL();
+  }, { passive: true });
   /* Expand, collapse, a node resize and the drag handle all change the
    * textarea's box; the gutter is positioned from it, so it has to follow. */
   if (window.ResizeObserver) {
-    new ResizeObserver(() => syncGutter()).observe(ta);
+    new ResizeObserver((entries) => {
+      /* contentBoxSize is the only reading of the textarea's inner width that
+       * is BOTH fractional and in layout pixels. clientWidth is rounded to a
+       * whole pixel, which wraps a long line one letter early on a
+       * fractional box; getBoundingClientRect is fractional but SCALED by the
+       * canvas zoom, which is worse. */
+      const b = entries[0] && entries[0].contentBoxSize && entries[0].contentBoxSize[0];
+      if (b && b.inlineSize > 0) taContentW = b.inlineSize;
+      syncGutter();
+    }).observe(ta);
   }
   window.addEventListener("resize", () => syncGutter());
 
@@ -1602,6 +1679,7 @@ function buildUI(node) {
     const scroll = ta.scrollTop;      /* assigning .value can reset it */
     ta.value = out;
     ta.scrollTop = scroll;
+    syncHL();
   }
 
   function swapImages(i, j, keepTokens) {
@@ -2764,6 +2842,7 @@ function buildUI(node) {
         "\u00b7 H3 invents speech to fill whatever the prompt leaves unsaid"));
     }
     renderShotBar();
+    syncHL();
   }
 
   /* Colours cycle and mean nothing but "next shot" -- deliberately away from
@@ -2814,9 +2893,18 @@ function buildUI(node) {
    * each marker index reports the line it landed on; that is where the bar
    * starts. The gutter then only has to scroll with the textarea. */
   let mirror = null;
+  /* Anything that can move a WRAP POINT belongs here. A textarea carries a UA
+   * stylesheet a plain div does not, so a property left uncopied is a property
+   * that can differ - and one differing wrap point slides every character
+   * after it, which reads as the caret sitting over the wrong letter. */
   const MIRROR_PROPS = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "fontVariant",
     "letterSpacing", "lineHeight", "textTransform", "wordSpacing", "textIndent",
-    "whiteSpace", "wordBreak", "overflowWrap", "tabSize"];
+    "whiteSpace", "wordBreak", "overflowWrap", "tabSize",
+    "fontKerning", "fontVariantLigatures", "fontFeatureSettings", "fontStretch",
+    "fontOpticalSizing", "textRendering", "hyphens", "lineBreak", "textWrap",
+    "textWrapMode", "textWrapStyle", "whiteSpaceCollapse", "textSizeAdjust",
+    "webkitTextSizeAdjust", "textAutospace", "textSpacingTrim", "textOrientation",
+    "writingMode", "unicodeBidi"];
 
   function shotTops(marks) {
     if (!mirror) { mirror = el("div", "gcast-mirror"); document.body.append(mirror); }
@@ -2861,6 +2949,7 @@ function buildUI(node) {
 
   function syncGutter() {
     if (lastGutter) renderGutter(lastGutter.marks, lastGutter.colour);
+    syncHL();
   }
 
   /* Place the bars for the current scroll offset.
@@ -2935,6 +3024,105 @@ function buildUI(node) {
         if (lastGutter) renderGutter(lastGutter.marks, lastGutter.colour, true);
       });
     }
+  }
+
+  /* ---- @tag colouring ---------------------------------------------
+   *
+   * Everything below only ever WRITES to the backdrop. The textarea is the
+   * single source of truth exactly as before, so if this whole block were
+   * deleted the prompt would keep working.
+   */
+  const TOKEN_SET = new Set(ALL_TOKENS);
+  const hlEsc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  /* one pass, two things worth seeing: the @tags, and the [Shot N] markers
+   * in the same colour their band has on the timeline just above. */
+  const HL_RE = /(\[\s*Shot\s*\d+\s*\](?:\s*At\s+[0-9:.]+\s*s?\s*,?)?)|(@[A-Za-z][A-Za-z0-9]*)/g;
+
+  function hlMarkup(text) {
+    let out = "", last = 0, shot = 0, m;
+    HL_RE.lastIndex = 0;
+    while ((m = HL_RE.exec(text)) !== null) {
+      out += hlEsc(text.slice(last, m.index));
+      if (m[1]) {
+        const c = SHOT_COLOURS[shot % SHOT_COLOURS.length];
+        shot++;
+        out += '<span class="shot" style="color:' + c + '">' + hlEsc(m[1]) + "</span>";
+      } else {
+        /* a tag that names no slot is a typo you want to see NOW, not after
+         * a render comes back with the reference missing */
+        out += '<span class="' + (TOKEN_SET.has(m[2]) ? "tok" : "bad") + '">'
+             + hlEsc(m[2]) + "</span>";
+      }
+      last = m.index + m[0].length;
+    }
+    /* the trailing newline is what a textarea itself renders, and the height
+     * check below compares against it */
+    out += hlEsc(text.slice(last)) + "\n";
+    return out;
+  }
+
+  let hlOn = null, hlRetry = 0, hlPadT = 0;
+
+  function scrollHL() {
+    hlInner.style.top = (hlPadT - ta.scrollTop) + "px";
+  }
+
+  function setHL(on) {
+    if (on === hlOn) return;
+    hlOn = on;
+    ta.classList.toggle("hlon", on);
+    hl.style.visibility = on ? "" : "hidden";
+  }
+
+  function syncHL() {
+    const h = ta.clientHeight;
+    /* Expand re-flows a frame later, same as the gutter. Retry, but only for
+     * a second: a collapsed or hidden node would otherwise spin a rAF loop
+     * forever waiting for a height it is never going to get. */
+    if (!h) {
+      setHL(false);
+      if (hlRetry++ < 60) requestAnimationFrame(syncHL);
+      return;
+    }
+    hlRetry = 0;
+
+    const cs = getComputedStyle(ta);
+    const padL = parseFloat(cs.paddingLeft) || 0, padR = parseFloat(cs.paddingRight) || 0;
+    const padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
+    const bT = parseFloat(cs.borderTopWidth) || 0, bL = parseFloat(cs.borderLeftWidth) || 0;
+    const bR = parseFloat(cs.borderRightWidth) || 0;
+
+    /* Over the PADDING box, not the content box: the strip under the
+     * scrollbar needs the well colour too, and the scrollbar itself is drawn
+     * by the textarea on top of us. */
+    hl.style.top = (ta.offsetTop + bT) + "px";
+    hl.style.left = (ta.offsetLeft + bL) + "px";
+    hl.style.width = Math.max(0, ta.offsetWidth - bL - bR) + "px";
+    hl.style.height = h + "px";
+
+    /* Same trick as the mirror: the inner box carries NO padding, so nothing
+     * depends on reproducing the textarea's box - the padding is added once,
+     * as an offset, and cannot drift. */
+    MIRROR_PROPS.forEach((k) => { hlInner.style[k] = cs[k]; });
+    hlInner.style.padding = "0";
+    hlInner.style.boxSizing = "content-box";
+    hlInner.style.left = padL + "px";
+    hlPadT = padT;
+    /* The observed width when we have one, the rounded fallback until then.
+     * The fallback is exactly what shipped first and works; the observed
+     * value only removes the one-letter wrap drift on fractional widths. */
+    hlInner.style.width = Math.max(10, taContentW || (ta.clientWidth - padL - padR)) + "px";
+    hlInner.style.direction = cs.direction;
+    hlInner.innerHTML = hlMarkup(ta.value || "");
+
+    /* THE GUARD. scrollHeight is max(client, content+padding) on both sides,
+     * so this compares like with like whether the prompt overflows or not.
+     * Disagreement means the backdrop is wrapping differently from the
+     * textarea, i.e. the colours would sit under the wrong words - so the
+     * colouring switches itself off and the plain prompt comes back. */
+    const want = Math.max(h, hlInner.offsetHeight + padT + padB);
+    setHL(Math.abs(want - ta.scrollHeight) <= 2);
+    scrollHL();
   }
 
   function renderShotBar() {
@@ -4718,6 +4906,43 @@ function buildUI(node) {
     e.preventDefault(); e.stopPropagation();
   }, { capture: true, passive: false });
 
+  /* PROMPT SCROLL - open since 2026-08-07, fixed the same way.
+   *
+   * The old diagnosis was right and the old fix was wrong. The frontend takes
+   * wheel at window level and only exempts editables it registered itself, so
+   * a hand-built textarea inside a DOM widget never sees the event and the
+   * .gcast-ac branch in the root handler below never runs. The conclusion was
+   * that the prompt had to become a stock multiline widget.
+   *
+   * It does not. An event log on v2 settles it: at window CAPTURE the wheel
+   * arrives with the textarea as its target, defaultPrevented false and
+   * cancelable true. It is ours before anyone else touches it - so exempt it
+   * here, by hand, exactly as the shot list is exempted above.
+   *
+   * A scrollable prompt keeps the wheel outright rather than handing it back
+   * at the ends: a wheel-down at scrollTop 0 zooming the graph instead of
+   * scrolling is the whole complaint. A prompt with nothing to scroll falls
+   * through untouched, so a short one still zooms like the rest of the panel. */
+  const onPromptWheel = (e) => {
+    if (e.target !== ta) return;
+    if (ta.scrollHeight <= ta.clientHeight) return;
+    /* deltaMode is pixels on his setup, but lines and pages are legal and a
+     * raw += would move by 3px per notch if one ever turned up. */
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 18;
+    const step = e.deltaMode === 1 ? lh : e.deltaMode === 2 ? ta.clientHeight : 1;
+    let d = e.deltaY * step;
+    /* His mouse sends 167px a notch, which is nine lines at this size - the
+     * browser normalises a delta that big when it scrolls an element itself,
+     * and taking it raw is why the prompt jumped a block at a time. Capped at
+     * three lines, the usual notch. Small deltas pass through untouched so a
+     * trackpad keeps its smooth scrolling instead of being quantised. */
+    const cap = lh * 3;
+    if (Math.abs(d) > cap) d = Math.sign(d) * cap;
+    ta.scrollTop += d;
+    e.preventDefault(); e.stopPropagation();
+  };
+  window.addEventListener("wheel", onPromptWheel, { capture: true, passive: false });
+
   /* The panel's collapsed height, measured rather than guessed. Floating the
    * prompt takes it out of the flow, which would otherwise shrink the panel
    * and open a gap above it in the v2 frontend. */
@@ -4922,7 +5147,7 @@ function buildUI(node) {
     ta.focus();
     st.prompt = ta.value;
     closeAC(); renderTags(); commit();
-    if (o.special) renderCheck();
+    if (o.special) renderCheck(); else syncHL();
   }
 
   function maybeAC() {
@@ -4959,6 +5184,7 @@ function buildUI(node) {
     const pos = s + pad.length + token.length + 1;
     ta.focus(); ta.setSelectionRange(pos, pos);
     st.prompt = ta.value; commit();
+    syncHL();
   }
 
   /* -------------------------------------------------------- listeners */
@@ -5226,6 +5452,7 @@ function buildUI(node) {
       ac.remove();
       /* a window listener per node instance would outlive the node */
       window.removeEventListener("paste", onPaste, true);
+      window.removeEventListener("wheel", onPromptWheel, true);
     },
     load,
     /* Core's route, used when the node is selected but the pointer is not over
