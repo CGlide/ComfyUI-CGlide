@@ -10,7 +10,7 @@ I make short films with these. Everything here exists because I needed it, and
 the defaults are what I actually use.
 <p align="center">
 <a href="https://youtu.be/aEUM6sihSdI">
-<img width="577" height="878" alt="Capture d&#39;écran 2026-08-28 193208" src="https://github.com/user-attachments/assets/cc83e51e-dca5-414f-919d-4ec7e09b3a00" />
+<img width="515" height="793" alt="Capture d&#39;écran 2026-09-07 002618" src="https://github.com/user-attachments/assets/55191f06-fa11-43e9-97ad-0092b7bf2c3a" />
 
 </a>
 <br>
