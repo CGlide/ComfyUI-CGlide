@@ -717,7 +717,7 @@ const CSS = `
      The bloom is a background stop rather than a shadow on the bar, because
      the block clips its own overflow for the label ellipsis. */
   background:linear-gradient(90deg, var(--cg, #ffffff1a) 0px, var(--cw, #ffffff0f) 24px,
-             #ffffff00 66%), var(--h3-bg);
+             #ffffff00 66%), var(--h3-panel);
   box-shadow:inset 0 0 0 2px #ffffff17, 0 1px 3px rgba(0,0,0,.45);
   /* left is transitioned so the blocks SLIDE apart to open the gap while you
      drag. A 2px marker on top of six saturated colours was not readable, and
@@ -889,7 +889,7 @@ const CSS = `
 .gcast-shotbar .seg { position:relative; height:100%; min-width:0; overflow:hidden;
   display:flex; align-items:center; border-radius:6px;
   background:linear-gradient(90deg, var(--scg, #ffffff1a) 0px, var(--scw, #ffffff0f) 20px,
-             #ffffff00 62%), var(--h3-bg);
+             #ffffff00 62%), var(--h3-panel);
   box-shadow:inset 0 0 0 2px #ffffff17, 0 1px 3px #00000059; }
 /* The bloom is a background stop, not a shadow on this bar: the card clips its
    own overflow for the label ellipsis, so an outer box-shadow here would be cut
