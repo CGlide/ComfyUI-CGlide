@@ -707,21 +707,26 @@ const CSS = `
    caret, but the text would still soften for no gain. */
 .gcast-tl .strip { position:absolute; top:0; bottom:0; }
 .gcast-tl .clip { position:absolute; top:0; bottom:0; border-radius:6px;
-  box-sizing:border-box; padding:0 7px; overflow:hidden; cursor:pointer;
+  box-sizing:border-box; padding:0 7px 0 12px; overflow:hidden; cursor:pointer;
   display:flex; flex-direction:column; justify-content:center; gap:1px;
-  /* A dark ramp off the left edge of every block. With the colours keyed to
-     clip identity two neighbours can now draw the same colour, and a shared
-     edge between two flat fills is invisible. The ramp makes each block start
-     dark and open out, so the boundary reads even when the colour does not.
-     The colour itself is passed in as --c. */
-  background:linear-gradient(90deg, rgba(0,0,0,.62), rgba(0,0,0,0) 46%), var(--c, #444);
-  box-shadow:0 1px 3px rgba(0,0,0,.45);
+  /* A card, not a colour block: near-black body with the clip's colour as a
+     solid edge down the left and a bloom off it. That replaces the old dark
+     ramp, which existed because colours are keyed to clip IDENTITY, so two
+     neighbours can draw the same colour and a shared edge between two flat
+     fills is invisible. A hard colour bar at every block start says it louder.
+     The bloom is a background stop rather than a shadow on the bar, because
+     the block clips its own overflow for the label ellipsis. */
+  background:linear-gradient(90deg, var(--cg, #ffffff1a) 0px, var(--cw, #ffffff0f) 24px,
+             #ffffff00 66%), var(--h3-bg);
+  box-shadow:inset 0 0 0 2px #ffffff17, 0 1px 3px rgba(0,0,0,.45);
   /* left is transitioned so the blocks SLIDE apart to open the gap while you
      drag. A 2px marker on top of six saturated colours was not readable, and
      a line tells you where it lands without showing you what it will look
      like. Repainting after the drop writes the same positions, so there is
      no jump when the real order takes over. */
   transition:left .15s cubic-bezier(.2,.7,.3,1), filter .12s ease, box-shadow .12s ease; }
+.gcast-tl .clip::before { content:""; position:absolute; left:0; top:0; bottom:0;
+  width:4px; border-radius:6px 0 0 6px; background:var(--c, #444); }
 .gcast-tl .clip.nomove { transition:filter .12s ease, box-shadow .12s ease; }
 .gcast-tl .clip .nm { font-size:10px; line-height:1.15; color:#fff; opacity:.96;
   text-shadow:0 1px 2px rgba(0,0,0,.55); white-space:nowrap; overflow:hidden;
@@ -750,21 +755,25 @@ const CSS = `
   pointer-events:none; text-shadow:0 1px 4px #000, 0 0 10px #000; letter-spacing:.02em; }
 .gcast-wavlabel span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
   max-width:100%; }
-/* A truncated name is the one case where the label has a job left to do, so
-   it stops being decoration and takes the pointer - hovering scrolls it far
-   enough left to read the end, then puts it back. Only the truncated ones:
-   a name that already fits has nothing to reveal and should not move under
-   the cursor.
+/* A truncated name scrolls on hover so the end can be read, then goes back.
+   Only the truncated ones: a name that already fits has nothing to reveal and
+   should not move under the cursor.
 
    Two layers, and it has to be two: the span clips and stays still, the <i>
    inside it moves. Translating the clipping box itself carries its own
    overflow window along with it, so the text slides and you read exactly the
-   same characters - which is what the first attempt did. */
-.gcast-wavlabel.long { pointer-events:auto; cursor:default; }
+   same characters - which is what the first attempt did.
+
+   THE LABEL NEVER TAKES THE POINTER. It is inset:0 over the whole track and
+   is appended AFTER the handles, so a pointer-events:auto on it sat on top
+   of hA, hB and the slide target and killed every drag - but only on clips
+   whose filename happened to overflow, which is why it looked intermittent.
+   The reveal hangs off the TRACK's hover instead, and the OS tooltip moved
+   onto the track with it. */
 .gcast-wavlabel.long span i { display:inline-block; font-style:normal;
   transition:transform 2.2s linear; }
-.gcast-wavlabel.long:hover span { text-overflow:clip; }
-.gcast-wavlabel.long:hover span i { transform:translateX(var(--gc-slide, 0px)); }
+.gcast-track:hover .gcast-wavlabel.long span { text-overflow:clip; }
+.gcast-track:hover .gcast-wavlabel.long span i { transform:translateX(var(--gc-slide, 0px)); }
 /* Only when a corner chip is actually present \u2014 otherwise the name gets the
    full width, which most video slots have. */
 .gcast-wavlabel.inset { padding-left:74px; padding-right:74px; }
@@ -862,24 +871,42 @@ const CSS = `
 .gcast-shotbar .ruler .lbl { position:absolute; top:0; margin-left:3px; line-height:1;
   font-family:ui-monospace,Consolas,monospace; font-size:8px; color:var(--h3-dim); }
 .gcast-shotbar .band { position:relative; display:flex; height:22px; width:100%;
-  border-radius:5px; overflow:hidden; background:var(--h3-well); gap:1px; }
+  border-radius:5px; background:var(--h3-well); gap:3px; }
 /* Wide grab area, thin visible line. 17px is easy to catch on a busy strip,
    but what you SEE stays a 2px seam - a 17px marker would cover the very
    segment edge you are trying to place. */
 .gcast-shotbar .bnd { position:absolute; top:0; bottom:0; width:17px;
-  margin-left:-8px; cursor:col-resize; touch-action:none; z-index:2; }
+  margin-left:-8px; cursor:col-resize; touch-action:none; z-index:3; }
 .gcast-shotbar .bnd::after { content:""; position:absolute; left:7px; top:0; bottom:0;
-  width:2px; border-radius:1px; background:#fff; opacity:.3; transition:.12s; }
-.gcast-shotbar .bnd:hover::after { opacity:.8; }
+  width:2px; border-radius:1px; background:#fff; opacity:0; transition:.12s; }
+.gcast-shotbar .bnd:hover::after { opacity:.55; }
 .gcast-shotbar .bnd.on::after { opacity:1; background:var(--h3-txt); }
-.gcast-shotbar .seg { height:100%; min-width:0; overflow:hidden;
-  display:flex; align-items:center; }
+/* Each shot is a card: near-black body, a solid colour edge down its left and
+   a bloom off that edge. The 3px gaps between cards are what now reads as the
+   boundary, so the drag seam is invisible at rest and only appears on hover -
+   two lines saying the same thing was noise. --sc/--scw/--scg come in inline
+   from paintSeg(). */
+.gcast-shotbar .seg { position:relative; height:100%; min-width:0; overflow:hidden;
+  display:flex; align-items:center; border-radius:6px;
+  background:linear-gradient(90deg, var(--scg, #ffffff1a) 0px, var(--scw, #ffffff0f) 20px,
+             #ffffff00 62%), var(--h3-bg);
+  box-shadow:inset 0 0 0 2px #ffffff17, 0 1px 3px #00000059; }
+/* The bloom is a background stop, not a shadow on this bar: the card clips its
+   own overflow for the label ellipsis, so an outer box-shadow here would be cut
+   off square instead of falling away. */
+.gcast-shotbar .seg::before { content:""; position:absolute; left:0; top:0; bottom:0;
+  width:4px; border-radius:6px 0 0 6px; background:var(--sc, transparent); }
+.gcast-shotbar .seg.lead::before { display:none; }
 /* White ink, with a soft shadow so it survives the lighter colours in the
-   cycle (the ochre and the sand) as well as the blues. */
-.gcast-shotbar .seg .lab { min-width:0; padding:0 6px; font-size:10px; line-height:1;
+   cycle (the ochre and the sand) as well as the blues. Left padding clears
+   the colour edge and its bloom. */
+.gcast-shotbar .seg .lab { min-width:0; padding:0 6px 0 11px; font-size:10px; line-height:1;
   color:#fff; opacity:.96; text-shadow:0 1px 2px rgba(0,0,0,.55);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
-.gcast-shotbar .seg.past { background-image:repeating-linear-gradient(
+/* Overlay, not a background layer - the body is a gradient now and a
+   background-image would replace it. */
+.gcast-shotbar .seg.past::after { content:""; position:absolute; inset:0;
+  pointer-events:none; background:repeating-linear-gradient(
   45deg, #00000000 0 3px, #00000059 3px 6px); }
 .gcast-shotbar .note { font-family:ui-monospace,Consolas,monospace; font-size:9.5px;
   color:var(--h3-dim); }
@@ -2423,7 +2450,7 @@ function buildUI(node) {
       const sp = el("span");
       const inner = el("i", null, label);
       sp.append(inner);
-      lb.title = label;   // the OS tooltip, for anyone who would rather not wait
+      track.title = label;   // on the track, not the label: the label is inert
       lb.append(sp);
       track.append(lb);
       /* Measured after layout, because whether a name overflows depends on the
@@ -2984,6 +3011,16 @@ function buildUI(node) {
    * the accent (weight family) and violet (project), which do mean something. */
   const SHOT_COLOURS = ["#4f8cd6", "#4fae8b", "#c9a24a", "#9a72c9", "#57a0b8", "#d08f6a"];
 
+  /* A segment is drawn as a card: dark body, a solid edge down its left side
+   * and a bloom around that edge. The colour reaches CSS as three custom
+   * properties rather than a background, so one inline value can drive the
+   * edge, the wash across the body and the glow without three rules here. */
+  const paintSeg = (seg, hex) => {
+    seg.style.setProperty("--sc", hex);
+    seg.style.setProperty("--scg", hex + "5c");   // bloom hugging the edge
+    seg.style.setProperty("--scw", hex + "24");   // wash, fades out to the right
+  };
+
   /* Rewrite one marker's timestamp in the prompt. The whole point of the drag
    * is that it edits the text you will actually send - a timeline that only
    * moved a picture around would be decoration. */
@@ -3298,7 +3335,7 @@ function buildUI(node) {
        * The band then just reads as the clip's length. */
       const seg = el("div", "seg");
       seg.style.flex = "1 1 0%";
-      seg.style.background = SHOT_COLOURS[0] + "94";
+      paintSeg(seg, SHOT_COLOURS[0]);
       seg.title = `one continuous shot \u00b7 ${fmtSecs(total)}`;
       const only = (fieldText(st.prompt || "", "detailed_description")
                  || String(st.prompt || "")).replace(/\s+/g, " ").trim();
@@ -3318,7 +3355,7 @@ function buildUI(node) {
       const times = live.map((s) => s.start);
       const segs = live.map((s, i) => {
         const seg = el("div", "seg" + (s.end > total ? " past" : ""));
-        seg.style.background = SHOT_COLOURS[i % SHOT_COLOURS.length] + "b4";
+        paintSeg(seg, SHOT_COLOURS[i % SHOT_COLOURS.length]);
         const blurb = shotBlurb(st.prompt, s);
         seg.append(el("span", "lab", blurb || `shot ${s.n}`));
         band.append(seg);
@@ -3387,7 +3424,7 @@ function buildUI(node) {
        * with invented sound -- so it is worth seeing, not hiding. */
       const first = shots.find((s) => !s.untimed && !s.past);
       if (first && first.start > 0.01) {
-        const lead = el("div", "seg");
+        const lead = el("div", "seg lead");
         lead.style.flex = `${first.start} 0 0%`;
         lead.style.background = "#ffffff14";
         lead.title = `nothing scripted before ${fmtSecs(first.start)}`;
@@ -4253,7 +4290,10 @@ function buildUI(node) {
       const d = el("div", "clip" + (b.i === p.idx ? " on" : ""));
       d.style.left = b.x + "px";
       d.style.width = Math.max(3, b.w - 2) + "px";
-      d.style.setProperty("--c", tlColour(sh, b.i) + "c4");
+      const c = tlColour(sh, b.i);
+      d.style.setProperty("--c", c);            // solid edge down the left
+      d.style.setProperty("--cg", c + "5c");    // bloom hugging that edge
+      d.style.setProperty("--cw", c + "24");    // wash, fades out to the right
       d.dataset.clip = String(b.i);
       d.title = shotLabel(sh, b.i) + " \u2014 " + fmtSecs(b.sec)
               + "  (double-click to rename)";
