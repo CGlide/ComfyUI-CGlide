@@ -1431,9 +1431,28 @@ function buildUI(node) {
   let st = blankState();
   let dataWidget = null;
 
+  /* Which clip of which project this is. Read at commit time from
+     node.properties rather than kept in `st`, because `st` is what gets
+     written into shots[i].state on autosave and into a .h3.json on save -
+     baking an index into a saved clip would make it lie the moment the clip
+     was reordered or imported into another project. */
+  const clipMeta = () => {
+    const p = (node.properties && node.properties.gcast_project) || null;
+    if (!p || !Array.isArray(p.shots) || !(p.idx >= 0) || !p.shots[p.idx]) return null;
+    return {
+      name: String(p.shots[p.idx].name || "").trim(),
+      index: p.idx + 1,
+      count: p.shots.length,
+      project: String(p.name || "").trim()
+    };
+  };
+
   const commit = () => {
     if (!dataWidget) dataWidget = node.widgets?.find((w) => w.name === "h3_data");
-    if (dataWidget) dataWidget.value = JSON.stringify(st);
+    /* The clip identity rides along in the widget value only. parseInitial
+       whitelists on the way back in, so it is dropped on reload rather than
+       becoming part of the state. */
+    if (dataWidget) dataWidget.value = JSON.stringify(Object.assign({}, st, { clip: clipMeta() }));
     node.setDirtyCanvas(true, true);
   };
 

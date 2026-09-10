@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import os
+import re
 
 import numpy as np
 from collections import deque
@@ -565,6 +566,23 @@ def parse_h3_data(raw):
             "flatten": max(0.0, min(1.0, float(raw_cont.get("flatten") or 0.0))),
         }
 
+    # Who this clip IS. Whitelisted like the rest, so a project file that
+    # predates this simply has no "clip" key and the node emits an empty name.
+    raw_clip = data.get("clip")
+    clip = None
+    if isinstance(raw_clip, dict):
+        try:
+            idx = int(raw_clip.get("index") or 0)
+            cnt = int(raw_clip.get("count") or 0)
+        except Exception:
+            idx = cnt = 0
+        clip = {
+            "name": str(raw_clip.get("name") or "")[:120],
+            "index": max(0, idx),
+            "count": max(0, cnt),
+            "project": str(raw_clip.get("project") or "")[:120],
+        }
+
     return {
         "mode": "fl2va" if data.get("mode") == "fl2va" else "ref2va",
         "width": int(data.get("width") or 1344),
@@ -578,7 +596,69 @@ def parse_h3_data(raw):
         "videos": _video_slot_list(slots.get("videos")),
         "audios": _slot_list(slots.get("audios"), MAX_AUDIOS),
         "cont": cont,
+        "clip": clip,
     }
+
+
+# Clip labels are free text typed into the panel, and they end up in a path.
+# Windows rejects more than POSIX does, so this clears the union: the reserved
+# characters, control codes, the device names that stay illegal even with an
+# extension, and trailing dots or spaces (Explorer strips those silently, so a
+# file written with one cannot be reopened under the name it was given).
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL"} | {
+    "%s%d" % (p, i) for p in ("COM", "LPT") for i in range(1, 10)}
+
+_ILLEGAL = re.compile(r'[\x00-\x1f<>:"/\\|?*]+')
+
+
+def safe_name(text, limit=60):
+    """Turn a typed clip label into something usable as a filename fragment."""
+    s = _ILLEGAL.sub("-", str(text or "").strip())
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[-_.]{2,}", "-", s).strip("-_. ")[:limit].strip("-_. ")
+    # Last, not first: the escaping prefix must survive the trim that follows,
+    # and truncation can expose a reserved name that was not one at full length.
+    if s.upper().split(".")[0] in _WIN_RESERVED:
+        s = "_" + s
+    return s
+
+
+def clip_label(cfg):
+    """A ready-made filename_prefix for this clip: <project>/<NN>_<name>.
+
+    Shaped to be wired straight into Glide Video's filename_prefix, so the
+    project becomes a subfolder and each render arrives already named. That is
+    why the project is a path segment rather than part of the stem: one folder
+    per film beats one folder holding every film's clips, and the prefix
+    widget is the one place in the graph that already understands a slash.
+
+    Index leads the name because that is what makes the folder sort into the
+    order of the film. A name alone puts "Twirls" before "Opening Steps",
+    which is the same problem in a nicer font. Padding follows the project
+    size, so a twelve clip film reads 01..12 and never 1, 10, 11, 2.
+
+    The panel's placeholder is not a name: if nobody typed one the clip is
+    called "Clip 4" only because it is fourth, so the index already says it.
+    """
+    clip = cfg.get("clip")
+    if not clip:
+        return ""
+    idx, cnt = clip["index"], clip["count"]
+    name = safe_name(clip["name"])
+    project = safe_name(clip["project"])
+
+    if not idx:
+        stem = name
+    else:
+        width = max(2, len(str(max(cnt, idx))))
+        if not name or clip["name"].strip().lower() == ("clip %d" % idx):
+            stem = "%0*d" % (width, idx)
+        else:
+            stem = "%0*d_%s" % (width, idx, name)
+
+    if project and stem:
+        return "%s/%s" % (project, stem)
+    return project or stem
 
 
 CARRY_NOTE = ("@video%d gives the state of the scene at this point in the film: "
@@ -757,11 +837,14 @@ class CSGlideCast:
             },
         }
 
+    # clip_name is APPENDED, never inserted. LiteGraph stores links by output
+    # index, so a new socket next to source_video would silently rewire every
+    # saved workflow that already uses this node.
     RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT",
-                    "STRING", "IMAGE", "CONDITIONING")
+                    "STRING", "IMAGE", "CONDITIONING", "STRING")
     RETURN_NAMES = ("positive", "latent", "width", "height", "length", "seconds",
                     "overlap_frames", "source_video", "guide_frames",
-                    "positive_refine")
+                    "positive_refine", "clip_name")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -1120,7 +1203,8 @@ class CSGlideCast:
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
             return (cond, latent, width, height, frame_count, seconds, overlap,
-                    source, guide_frames, self._without_keyframes(cond))
+                    source, guide_frames, self._without_keyframes(cond),
+                    clip_label(cfg))
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
