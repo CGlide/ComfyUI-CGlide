@@ -735,6 +735,25 @@ const CSS = `
   line-height:1; color:#fff; opacity:.66; text-shadow:0 1px 2px rgba(0,0,0,.55);
   white-space:nowrap; }
 .gcast-tl .clip:hover { filter:brightness(1.18); }
+/* Skipped clips stay legible but plainly out of the run: greyed and dropped
+   back, never hidden and never a different height -- the timeline is how you
+   read the shape of the project, and a block that changes size when you skip
+   it makes the whole strip jump. Grey reads at any zoom, including blocks too
+   narrow to carry the dot. */
+.gcast-tl .clip.off { filter:grayscale(1); opacity:.45; }
+.gcast-tl .clip.off:hover { filter:grayscale(1) brightness(1.3); opacity:.62; }
+.gcast-tl .clip.off .nm { opacity:.8; }
+/* The dot is the CONTROL, and it degrades where the state does not: below a
+   readable width it would be a 6px target sitting on a draggable block, which
+   is a mis-click waiting to happen. The block still shows its state; you just
+   toggle it from the project list or with Alt-click. */
+.gcast-tl .clip .sk { position:absolute; top:3px; right:4px; width:13px; height:13px;
+  border:0; padding:0; border-radius:50%; background:#00000059; color:#fff;
+  font-size:8px; line-height:13px; text-align:center; cursor:pointer;
+  opacity:.5; transition:opacity .12s ease, background .12s ease; z-index:2; }
+.gcast-tl .clip .sk:hover { opacity:1; background:#000000a6; }
+.gcast-tl .clip.off .sk { opacity:.9; }
+.gcast-tl .clip.hasdot { padding-right:21px; }
 .gcast-tl .clip.on { box-shadow:inset 0 0 0 2px var(--h3-accent), 0 2px 7px rgba(0,0,0,.55); }
 .gcast-tl .clip.on .nm { opacity:1; }
 .gcast-tl .clip.lifted { opacity:.3; }
@@ -1821,11 +1840,13 @@ function buildUI(node) {
     return g;
   }
 
-  /* The prompt names SLOTS, not pictures. Move a picture and leave the tokens
-     where they are and every sentence written about it now describes whatever
-     took its place -- so the tokens travel WITH the picture and the prompt goes
-     on meaning what it meant. Hold Alt to move the picture alone, which is the
-     other case: the prompt is already right and the pictures are out of order. */
+  /* The prompt names SLOTS, not pictures, so the two cases pull opposite ways:
+     remapping the tokens keeps each sentence pointing at the picture it was
+     written about, while leaving them alone keeps a prompt that is already
+     right. DEFAULT IS TO LEAVE THE PROMPT ALONE -- a reorder is usually the
+     pictures catching up with a prompt, not the other way round, and a silent
+     rewrite of text you did not touch is the worse surprise of the two.
+     Hold Alt on release to remap the tokens with the picture. */
   function swapPromptTokens(i, j) {
     const a = `@image${i + 1}`, b = `@image${j + 1}`;
     const p = st.prompt || "";
@@ -1839,7 +1860,7 @@ function buildUI(node) {
     syncHL();
   }
 
-  function swapImages(i, j, keepTokens) {
+  function swapImages(i, j, remapTokens) {
     const bank = st.slots.images;
     const a = bank[i], b = bank[j];
     if (!a || !b || a === b) return;
@@ -1849,7 +1870,7 @@ function buildUI(node) {
     const tmp = { ...a };
     clearSlot(a); Object.assign(a, b);
     clearSlot(b); Object.assign(b, tmp);
-    if (!keepTokens) swapPromptTokens(i, j);
+    if (remapTokens) swapPromptTokens(i, j);
     render(); commit();
   }
 
@@ -1903,6 +1924,8 @@ function buildUI(node) {
         lastDragEnd = Date.now();
         if (!target || ev.type !== "pointerup") return;   /* cancelled: no swap */
         const to = Number(target.dataset.imgIndex);
+        /* Alt asks for the tokens to follow the picture; bare drop moves the
+           picture only and the prompt is left exactly as typed. */
         if (Number.isInteger(to)) swapImages(idx, to, ev.altKey);
       };
 
@@ -2976,7 +2999,7 @@ function buildUI(node) {
         wireDrop(card, slot, "image", ACCEPT_IMAGE, `@image${i + 1}`, i);
         wireImageReorder(card, i);
         card.title = slot.file
-          ? "Drag onto another slot to swap \u2014 hold Alt to move the picture and leave the @tags alone"
+          ? "Drag onto another slot to swap \u2014 the prompt is left alone; hold Alt to move the @tags with the picture"
           : "Click or drop \u2014 several pictures at once fill from here";
         imgGrid.append(card);
       });
@@ -3028,7 +3051,12 @@ function buildUI(node) {
 
   /* Colours cycle and mean nothing but "next shot" -- deliberately away from
    * the accent (weight family) and violet (project), which do mean something. */
-  const SHOT_COLOURS = ["#4f8cd6", "#4fae8b", "#c9a24a", "#9a72c9", "#57a0b8", "#d08f6a"];
+  /* Saturation raised 2026-09-14, same six hues. The muted originals were hard
+     to tell apart in the timeline strip, where the colour only shows as an edge
+     and a bloom. Lightness is near enough unchanged, so white labels sit on
+     them exactly as before. Shared with the prompt segment strip on purpose -
+     a clip carries one identity colour everywhere. */
+  const SHOT_COLOURS = ["#358ffb", "#3ccb96", "#edb331", "#9f65e3", "#45b1d5", "#ed8f59"];
 
   /* A segment is drawn as a card: dark body, a solid edge down its left side
    * and a bloom around that edge. The colour reaches CSS as three custom
@@ -4299,7 +4327,8 @@ function buildUI(node) {
     const p2 = proj();
     const sig = [Math.round(L.pps * 100), Math.round(L.view), p.idx,
                  p2.shots.map((sh, i) => (sh.id || i) + ":" + shotLabel(sh, i)
-                   + ":" + Math.round(tlSecs(sh.state) * 100)).join("|")].join("/");
+                   + ":" + Math.round(tlSecs(sh.state) * 100)
+                   + (sh.off ? ":off" : "")).join("|")].join("/");
     if (sig === tlSig && tlStrip.children.length) return;
     tlSig = sig;
     tlStrip.style.width = L.width + "px";
@@ -4314,9 +4343,29 @@ function buildUI(node) {
       d.style.setProperty("--cg", c + "5c");    // bloom hugging that edge
       d.style.setProperty("--cw", c + "24");    // wash, fades out to the right
       d.dataset.clip = String(b.i);
+      /* The hover names the current state as well as the action, so it reads
+         the same whichever way the clip is set: you should not have to work
+         out from a grey block what Alt-click is about to do. */
       d.title = shotLabel(sh, b.i) + " \u2014 " + fmtSecs(b.sec)
-              + "  (double-click to rename)";
+              + (sh.off
+                  ? "  \u2014 SKIPPED, Render all passes over it"
+                  : "  \u2014 included in Render all")
+              + "  (double-click to rename, Alt-click to "
+              + (sh.off ? "include" : "skip") + ")";
       if (b.w < 24) d.classList.add("tiny");
+      if (sh.off) d.classList.add("off");
+      /* 46px is where a 13px dot plus the padding still leaves room for a
+         couple of characters of name. Under that the block keeps its grey but
+         loses the control. */
+      if (b.w >= 46) {
+        const sk = el("button", "sk", sh.off ? "\u25CB" : "\u25CF");
+        sk.title = sh.off
+          ? "Skipped \u2014 Render all will pass over this clip. Click to include it."
+          : "Included in Render all. Click to skip it.";
+        sk.onclick = (ev) => { ev.stopPropagation(); toggleSkip(b.i); };
+        d.classList.add("hasdot");
+        d.append(sk);
+      }
       d.append(el("div", "nm", shotLabel(sh, b.i)));
       /* the duration is dropped rather than squeezed when the block is too
        * narrow to hold both -- a clipped number is worse than no number */
@@ -4588,6 +4637,10 @@ function buildUI(node) {
     if (e.target.tagName === "INPUT") return;
     const hit = e.target.closest ? e.target.closest(".clip") : null;
     if (!hit) return;
+    /* Alt is already "the other thing" everywhere else in this node (save,
+       carry last, slot reorder), and a modifier cannot fire while you are
+       typing in a prompt box -- which is why this is not a letter key. */
+    if (e.altKey) { toggleSkip(Number(hit.dataset.clip)); return; }
     switchTo(Number(hit.dataset.clip));
   });
 
@@ -4982,6 +5035,18 @@ function buildUI(node) {
       load(JSON.stringify(p.shots[p.idx].state));
     }
     commit(); paintShotsBtn(); paintPresetName(); renderShots();
+  }
+
+  /* One place that flips the skip flag, because it is now reachable from three
+     of them: the dot in the project list, the dot on the timeline block, and
+     Alt-click on the block itself. renderShots repaints the panel; the timeline
+     repaints because the skipped flag is part of its signature. */
+  function toggleSkip(i) {
+    const p = proj();
+    const sh = p.shots[i];
+    if (!sh) return;
+    sh.off = !sh.off;
+    commit(); renderShots(); paintTimeline();
   }
 
   function moveShot(i, d) {
@@ -5469,11 +5534,7 @@ function buildUI(node) {
       skip.title = s.off
         ? "Skipped \u2014 Render all will pass over this clip. Click to include it."
         : "Included in Render all. Click to skip it.";
-      skip.onclick = (e) => {
-        e.stopPropagation();
-        s.off = !s.off;
-        commit(); renderShots();
-      };
+      skip.onclick = (e) => { e.stopPropagation(); toggleSkip(i); };
 
       const ctl = el("div", "ctl");
       const up = el("button", null, "\u25B2"); up.title = "Move up";

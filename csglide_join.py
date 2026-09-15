@@ -98,27 +98,66 @@ def _load_frames(path):
 
     Falls back to rgb24 if the build cannot give rgb48le, so an unusual ffmpeg
     degrades to the old behaviour rather than failing the join.
+
+    Decoded straight into ONE preallocated float32 array. The obvious version -
+    append each frame to a list, np.stack it, .astype it, then divide - holds
+    four copies of the same clip at peak, and on a long source that is what
+    runs the machine out of memory (issue #23: a 46s 1664x960 source peaked
+    past 50 GB). Same pixels, same result, about a quarter of the memory.
     """
-    frames = []
     depth = 65535.0
+    fmt = "rgb48le"
+    out = None
+    i = 0
     with av.open(path) as container:
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
+
+        # Frame count up front so the array can be allocated once. mp4 and mkv
+        # both carry it; if it is missing, fall back to duration x rate, and
+        # only guess as a last resort. Growing later costs a copy, which is
+        # the thing this function exists to avoid.
+        n = int(stream.frames or 0)
+        if n <= 0:
+            try:
+                n = int(float(stream.duration * stream.time_base)
+                        * float(stream.average_rate))
+            except Exception:
+                n = 0
+        if n <= 0:
+            n = 256
+
+
         for frame in container.decode(video=0):
-            if depth > 255.0:
+            if fmt == "rgb48le":
                 try:
-                    frames.append(frame.to_ndarray(format="rgb48le"))
-                    continue
+                    a = frame.to_ndarray(format="rgb48le")
                 except Exception as e:
-                    if frames:
+                    if i:
                         raise
                     print("[Glide Join] 16-bit decode unavailable (%s), "
                           "falling back to 8-bit" % e)
-                    depth = 255.0
-            frames.append(frame.to_ndarray(format="rgb24"))
-    if not frames:
+                    fmt, depth = "rgb24", 255.0
+                    a = frame.to_ndarray(format="rgb24")
+            else:
+                a = frame.to_ndarray(format=fmt)
+
+            if out is None:
+                out = np.empty((n,) + a.shape, dtype=np.float32)
+            elif i >= out.shape[0]:
+                # Metadata undercounted. Grow by half rather than per frame,
+                # so a wrong count costs one copy instead of hundreds.
+                grow = max(64, out.shape[0] // 2)
+                out = np.concatenate(
+                    [out, np.empty((grow,) + a.shape, dtype=np.float32)])
+
+            out[i] = a          # uint16/uint8 -> float32, written in place
+            out[i] /= depth
+            i += 1
+
+    if not i:
         raise ValueError("Glide Join: no video frames decoded from %s" % path)
-    return torch.from_numpy(np.stack(frames).astype(np.float32) / depth)
+    return torch.from_numpy(out[:i])
 
 
 def _load_audio(path):
@@ -264,7 +303,9 @@ class CSGlideJoin:
                 "source_video": ("STRING", {
                     "default": "",
                     "tooltip": "The clip this one continues from. Wire H3 Studio's "
-                               "source_video output."}),
+                               "source_video output. Point this at your LAST "
+                               "CLIP, not at an assembled film - the whole "
+                               "source is decoded to join it."}),
                 "images": ("IMAGE", {
                     "tooltip": "The continuation's decoded frames, untrimmed - the "
                                "anchored head must still be on them."}),
