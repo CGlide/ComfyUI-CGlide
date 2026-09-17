@@ -29,8 +29,13 @@ file. That single-pass shape is what avoids the silent-duplicate problem
 in encode-then-remux designs.
 """
 
-import shutil
-import subprocess
+# Every external process this pack starts goes through csglide_run -- one
+# audited place, list-form argv, never a shell. See that module for the
+# guards. Dual import so the file still works when run outside ComfyUI.
+try:
+    from . import csglide_run as _run
+except ImportError:
+    import csglide_run as _run
 
 # ---------------------------------------------------------------------
 # Presets
@@ -316,73 +321,14 @@ _encoder_cache = None
 _ffmpeg_cache = None
 
 
-def _ffmpeg_candidates():
-    """Every place ffmpeg might reasonably be, best first.
-
-    Windows does not ship ffmpeg and ComfyUI portable does not add it to
-    PATH, so shutil.which() alone fails on most Windows installs.
-    """
-    import os
-
-    # 1. explicit override wins
-    env = os.environ.get("CSGLIDE_FFMPEG") or os.environ.get("FFMPEG_BINARY")
-    if env:
-        yield env
-
-    # 2. on PATH
-    w = shutil.which("ffmpeg")
-    if w:
-        yield w
-
-    # 3. imageio-ffmpeg ships a working binary and is a common transitive
-    #    dependency in ComfyUI installs -- usually present even when the
-    #    system has no ffmpeg at all
-    try:
-        import imageio_ffmpeg
-        yield imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        pass
-
-    # 4. relative to the ComfyUI tree, and the usual Windows install spots
-    here = os.path.dirname(os.path.abspath(__file__))
-    roots = [
-        os.path.abspath(os.path.join(here, "..", "..")),        # ComfyUI/
-        os.path.abspath(os.path.join(here, "..", "..", "..")),  # portable root
-    ]
-    names = ["ffmpeg.exe", "ffmpeg"]
-    subs = ["", "ffmpeg", os.path.join("ffmpeg", "bin"), "bin",
-            os.path.join("python_embeded", "Scripts")]
-    for root in roots:
-        for sub in subs:
-            for name in names:
-                yield os.path.join(root, sub, name) if sub else os.path.join(root, name)
-
-    for p in [r"C:\ffmpeg\bin\ffmpeg.exe",
-              r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"]:
-        yield p
-
-
 def ffmpeg_path(refresh=False):
-    """Locate a working ffmpeg, caching the result."""
-    global _ffmpeg_cache
-    if _ffmpeg_cache is not None and not refresh:
-        return _ffmpeg_cache
+    """Locate a working ffmpeg, caching the result.
 
-    import os
-    for cand in _ffmpeg_candidates():
-        if not cand:
-            continue
-        try:
-            if os.path.sep in cand and not os.path.isfile(cand):
-                continue
-            subprocess.run([cand, "-version"], capture_output=True, timeout=10)
-            _ffmpeg_cache = cand
-            return cand
-        except Exception:
-            continue
-
-    _ffmpeg_cache = "ffmpeg"   # last resort; will fail loudly at encode time
-    return _ffmpeg_cache
+    Thin re-export. The resolver and every process start now live in
+    csglide_run, so the pack has one audited process boundary instead of
+    several. Kept under this name because callers already import it here.
+    """
+    return _run.ffmpeg_path(refresh=refresh)
 
 
 def installed_encoders(refresh=False):
@@ -400,10 +346,7 @@ def installed_encoders(refresh=False):
     found = set()
     exe = ffmpeg_path()
     try:
-        out = subprocess.run(
-            [exe, "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
+        out = _run.run(exe, ["-hide_banner", "-encoders"], timeout=20).stdout
         # encoder lines look like: " V....D av1_nvenc   NVIDIA NVENC av1 encoder"
         for m in re.finditer(r"^\s*([VAS][\.A-Z]{5})\s+(\S+)", out, re.M):
             name = m.group(2)
@@ -416,15 +359,39 @@ def installed_encoders(refresh=False):
         print("[Glide Video] no ffmpeg encoders detected -- only H.264 will be "
               "offered, and encoding will fail. Install ffmpeg, or set the "
               "CSGLIDE_FFMPEG environment variable to its full path.")
-    else:
-        wanted = ["libx264", "libx265", "libsvtav1", "av1_nvenc",
-                  "hevc_nvenc", "h264_nvenc", "prores_ks", "ffv1"]
-        have = [w for w in wanted if w in found]
-        print("[Glide Video] ffmpeg: %s (%d encoders; %s)"
-              % (exe, len(found), ", ".join(have) or "none of the expected"))
+    # NOTE: the success line is NOT printed here. installed_encoders() is
+    # reached from INPUT_TYPES() during node registration, so printing at
+    # this point buries the line in ComfyUI's startup output where nobody
+    # reads it. banner() below prints it on the first actual encode.
+    # A FAILURE still prints immediately -- that one explains why the
+    # preset list came up short, and is worth seeing at startup.
 
     _encoder_cache = found
     return found
+
+
+_banner_shown = False
+
+
+def banner():
+    """Print which ffmpeg is in use, once per session.
+
+    Called from the first encode rather than at import: at registration time
+    it lands in the middle of ComfyUI's startup warnings, which is exactly
+    where a line you might want to read goes to die.
+    """
+    global _banner_shown
+    if _banner_shown:
+        return
+    _banner_shown = True
+    found = installed_encoders()
+    if not found:
+        return                      # the failure path already said its piece
+    wanted = ["libx264", "libx265", "libsvtav1", "av1_nvenc",
+              "hevc_nvenc", "h264_nvenc", "prores_ks", "ffv1"]
+    have = [w for w in wanted if w in found]
+    print("[Glide Video] ffmpeg: %s (%d encoders; %s)"
+          % (ffmpeg_path(), len(found), ", ".join(have) or "none of the expected"))
 
 
 def resolve_preset(name):
@@ -471,19 +438,11 @@ def available_presets(include_hidden=False):
 def ffprobe_path():
     """ffprobe sitting beside the ffmpeg we already found, if there is one.
 
-    imageio-ffmpeg ships ffmpeg WITHOUT ffprobe, which is common in
-    ComfyUI installs -- so callers must handle None.
+    imageio-ffmpeg ships ffmpeg WITHOUT ffprobe, which is common in ComfyUI
+    installs -- so callers must handle None. Re-export; csglide_run holds
+    the resolution order.
     """
-    import os
-    exe = ffmpeg_path()
-    base = os.path.basename(exe)
-    for a, b in (("ffmpeg.exe", "ffprobe.exe"), ("ffmpeg", "ffprobe")):
-        if base == a:
-            cand = os.path.join(os.path.dirname(exe), b)
-            if os.path.isfile(cand):
-                return cand
-    w = shutil.which("ffprobe")
-    return w or None
+    return _run.ffprobe_path()
 
 
 def probe_video(path):
@@ -501,12 +460,12 @@ def probe_video(path):
     probe = ffprobe_path()
     if probe:
         try:
-            out = subprocess.run(
-                [probe, "-v", "error", "-select_streams", "v:0",
+            out = _run.run(
+                probe,
+                ["-v", "error", "-select_streams", "v:0",
                  "-show_entries", "stream=codec_name,profile,pix_fmt",
                  "-of", "default=nw=1", path],
-                capture_output=True, text=True, timeout=15,
-            ).stdout
+                timeout=15).stdout
             got = {}
             for line in out.splitlines():
                 if "=" in line:
@@ -523,8 +482,8 @@ def probe_video(path):
     # no ffprobe: ffmpeg -i prints the stream line to stderr and exits
     # non-zero because no output was given. That is expected, not an error.
     try:
-        err = subprocess.run([ffmpeg_path(), "-hide_banner", "-i", path],
-                             capture_output=True, text=True, timeout=15).stderr
+        err = _run.run(ffmpeg_path(), ["-hide_banner", "-i", path],
+                       timeout=15).stderr
         m = re.search(r"Video:\s*([^\s,(]+)(.*)", err)
         if not m:
             return {}

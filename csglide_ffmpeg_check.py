@@ -9,8 +9,14 @@ It reports which ffmpeg was found and which encoders that build has.
 """
 
 import os
-import shutil
-import subprocess
+
+# This script is run directly with ComfyUI's python, so it cannot use a
+# package-relative import. csglide_run sits next to it either way.
+sys_path_added = os.path.dirname(os.path.abspath(__file__))
+if sys_path_added not in __import__("sys").path:
+    __import__("sys").path.insert(0, sys_path_added)
+
+import csglide_run as _run
 
 WANTED = {
     "libx264":   "H.264 (compatible)",
@@ -23,30 +29,24 @@ WANTED = {
 
 
 def candidates():
-    env = os.environ.get("CSGLIDE_FFMPEG") or os.environ.get("FFMPEG_BINARY")
-    if env:
-        yield "env var", env
+    """Every place the pack itself would look, in the same order.
 
-    w = shutil.which("ffmpeg")
-    if w:
-        yield "PATH", w
-
-    try:
-        import imageio_ffmpeg
-        yield "imageio-ffmpeg", imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as e:
-        print("  imageio-ffmpeg not usable: %s" % e)
-
-    for p in [r"C:\ffmpeg\bin\ffmpeg.exe",
-              r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"]:
-        if os.path.isfile(p):
-            yield "common path", p
+    Shares csglide_run.ffmpeg_candidates() so this diagnostic cannot drift
+    from what Glide Video actually does at encode time -- the whole point of
+    the script is to explain that behaviour.
+    """
+    for cand in _run.ffmpeg_candidates():
+        if cand and (os.path.sep not in cand or os.path.isfile(cand)):
+            yield cand
 
 
 def encoders(exe):
     import re
-    out = subprocess.run([exe, "-hide_banner", "-encoders"],
-                         capture_output=True, text=True, timeout=20).stdout
+    # verify() is what promotes a candidate to runnable; the resolver
+    # uses the same call, so this script tests exactly what ships.
+    if not _run.verify(exe):
+        raise RuntimeError("does not run as ffmpeg")
+    out = _run.run(exe, ["-hide_banner", "-encoders"], timeout=20).stdout
     return {m.group(2) for m in re.finditer(r"^\s*([VAS][\.A-Z]{5})\s+(\S+)", out, re.M)
             if m.group(2) != "="}
 
@@ -64,8 +64,8 @@ def main():
         print("  CSGLIDE_FFMPEG=C:\\ffmpeg\\bin\\ffmpeg.exe")
         return
 
-    for source, exe in found:
-        print("  [%s] %s" % (source, exe))
+    for exe in found:
+        print("  %s" % exe)
         try:
             enc = encoders(exe)
         except Exception as e:

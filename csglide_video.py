@@ -16,7 +16,6 @@ import collections
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import threading
 
@@ -28,18 +27,23 @@ except ImportError:  # allows importing outside ComfyUI for testing
     folder_paths = None
 
 try:
+    from . import csglide_run as _run
+except ImportError:
+    import csglide_run as _run
+
+try:
     from .csglide_video_presets import (
         available_presets, build_ffmpeg_cmd, container_for,
         needs_preview_copy, pipe_format, probe_video, resolve_preset,
         CONTAINER_CHOICES, containers_for, resolve_container,
-        write_ffmetadata, PRESETS, DEFAULT_PRESET,
+        write_ffmetadata, banner, PRESETS, DEFAULT_PRESET,
     )
 except ImportError:
     from csglide_video_presets import (
         available_presets, build_ffmpeg_cmd, container_for,
         needs_preview_copy, pipe_format, probe_video, resolve_preset,
         CONTAINER_CHOICES, containers_for, resolve_container,
-        write_ffmetadata, PRESETS, DEFAULT_PRESET,
+        write_ffmetadata, banner, PRESETS, DEFAULT_PRESET,
     )
 
 
@@ -173,7 +177,8 @@ def _encode_once(cmd, images, deep):
     frame was written. A broken pipe means ffmpeg quit early -- the reason
     is in the stderr tail, not in the exception.
     """
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    # cmd[0] is ffmpeg_path(); csglide_run re-checks that and every argument.
+    proc = _run.popen(cmd[0], cmd[1:])
     lines = collections.deque(maxlen=STDERR_LINES)
     pump = threading.Thread(target=_drain, args=(proc.stderr, lines), daemon=True)
     pump.start()
@@ -395,6 +400,7 @@ class CSGlideVideo:
                 save_output=True, save_metadata=True, fallback_on_failure=True,
                 container="auto", audio=None, chain=None, prompt=None,
                 extra_pnginfo=None):
+        banner()          # names the ffmpeg in use, once per session
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
 

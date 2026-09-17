@@ -78,18 +78,30 @@ const EXT_KIND = {
 
 /* Ratio families. The first size in each ladder is the canvas H3's own
  * adapt_canvas() would pick; everything below it holds the same aspect on a
- * shorter edge, every axis a multiple of 32. */
+ * shorter edge, every axis a multiple of 32.
+ *
+ * `extra` holds hand-picked sizes the generated ladder never reaches, because
+ * their short edge is not on SHORT_EDGES or their aspect sits slightly off the
+ * family's. They are merged into the ladder and sorted by area with the rest.
+ * All of them are multiples of 32 and stay under the area cap.
+ *
+ * `drop` removes a generated size an `extra` has made redundant - same short
+ * edge, a few px apart on the long one, so the dropdown does not show a pair
+ * that looks like the same option twice. */
 const MAX_PIXELS = 768 * 1344;
 
 const RATIOS = [
-  { label: "21:9", w: 1536, h: 672 },
-  { label: "16:9", w: 1344, h: 768 },
+  /* 1344x576 / 896x384 are native 7:3 (2.333); 960x416 doubles to 1920x832 */
+  { label: "21:9", w: 1536, h: 672, extra: [[1344, 576], [960, 416], [896, 384]], drop: [[1312, 576]] },
+  /* 960x544 doubles to 1920x1088 - 1080 is not a multiple of 32, 1088 is */
+  { label: "16:9", w: 1344, h: 768, extra: [[960, 544]] },
   { label: "3:2",  w: 1152, h: 768 },
   { label: "4:3",  w: 1024, h: 768 },
-  { label: "1:1",  w: 768,  h: 768 },
+  { label: "1:1",  w: 768,  h: 768, extra: [[544, 544]] },
   { label: "3:4",  w: 768,  h: 1024 },
   { label: "2:3",  w: 768,  h: 1152 },
-  { label: "9:16", w: 768,  h: 1344 },
+  /* mirror of the 16:9 extra */
+  { label: "9:16", w: 768,  h: 1344, extra: [[544, 960]] },
 ];
 
 const SHORT_EDGES = [768, 704, 640, 576, 512, 448, 384, 352, 320];
@@ -107,8 +119,21 @@ function sizeLadder(base) {
     seen.add(key);
     out.push({ w, h });
   }
-  if (!out.some((o) => o.w === base.w && o.h === base.h)) out.unshift({ w: base.w, h: base.h });
-  return out;
+  for (const [w, h] of base.extra || []) {
+    if (w % 32 || h % 32) continue;
+    if (w * h > MAX_PIXELS + 1) continue;
+    const key = `${w}x${h}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ w, h });
+  }
+  const dropped = new Set((base.drop || []).map(([w, h]) => `${w}x${h}`));
+  /* never drop the family's own native canvas */
+  dropped.delete(`${base.w}x${base.h}`);
+  let kept = out.filter((z) => !dropped.has(`${z.w}x${z.h}`));
+  kept.sort((a, b) => b.w * b.h - a.w * a.h);
+  if (!kept.some((o) => o.w === base.w && o.h === base.h)) kept.unshift({ w: base.w, h: base.h });
+  return kept;
 }
 
 RATIOS.forEach((r) => { r.sizes = sizeLadder(r); });
@@ -147,6 +172,7 @@ function blankState() {
     width: 1344, height: 768,
     length: 243,
     ref_image_size: "match",
+    ref_refine_scale: 1,
     pace: 2.5,          /* legacy: the speech-budget slider is gone, kept so old .h3.json still parses */
     prompt: "",
     slots: { first: {}, last: {}, images: mk(MAX_IMAGES), videos: mk(MAX_VIDEOS), audios: mk(MAX_AUDIOS) },
@@ -171,6 +197,10 @@ function parseInitial(raw) {
   if (Number.isFinite(+d.height)) out.height = +d.height;
   if (Number.isFinite(+d.length)) out.length = alignFrames(+d.length);
   if (d.ref_image_size === "max") out.ref_image_size = "max";
+  {
+    const m = Number(d.ref_refine_scale);
+    out.ref_refine_scale = Number.isFinite(m) ? Math.min(4, Math.max(1, m)) : 1;
+  }
   if (Number.isFinite(+d.pace) && +d.pace > 0) out.pace = Math.min(4, Math.max(1, +d.pace));
   if (typeof d.prompt === "string") out.prompt = d.prompt;
 
@@ -475,6 +505,30 @@ const CSS = `
 .gcast-menu .grp { padding:3px 4px 1px; font-size:9.5px; letter-spacing:.13em;
   text-transform:uppercase; color:var(--h3-dim); }
 
+/* clip colour palette ----------------------------------------------
+ * Lives on document.body like .gcast-menu, so it carries its own copy of the
+ * variables - it inherits nothing from the panel out there. */
+.gcast-cpal {
+  --h3-panel:#212121; --h3-raise:#2b2b2b; --h3-line:#3b3b3b;
+  --h3-txt:#e3e3e3; --h3-dim:#979797; --h3-accent:#58d1ff;
+  position:fixed; z-index:9100; box-sizing:border-box;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  background:var(--h3-panel); border:1px solid var(--h3-line); border-radius:10px;
+  padding:7px; display:flex; flex-direction:column; gap:6px;
+  box-shadow:0 22px 60px #000d, 0 2px 10px #0009; }
+.gcast-cpal[data-mode="fl2va"] { --h3-accent:#59c14f; }
+.gcast-cpal .sw { display:grid; grid-template-columns:repeat(6, 18px); gap:5px; }
+.gcast-cpal .sw button { all:unset; pointer-events:auto; cursor:pointer;
+  box-sizing:border-box; width:18px; height:18px; border-radius:5px;
+  box-shadow:inset 0 0 0 1px #0006; transition:.12s; }
+.gcast-cpal .sw button:hover { transform:scale(1.14); }
+.gcast-cpal .sw button.on { box-shadow:inset 0 0 0 1px #0006, 0 0 0 2px var(--h3-txt); }
+.gcast-cpal .auto { all:unset; pointer-events:auto; cursor:pointer; box-sizing:border-box;
+  text-align:center; background:var(--h3-raise); border:1px solid var(--h3-line);
+  border-radius:7px; padding:4px 0; font-size:10.5px; color:var(--h3-dim); }
+.gcast-cpal .auto:hover { color:var(--h3-txt); border-color:var(--h3-accent); }
+.gcast-cpal .auto.on { color:var(--h3-accent); border-color:var(--h3-accent); }
+
 .gcast-label { font-size:9.5px; letter-spacing:.13em; text-transform:uppercase;
   color:var(--h3-label); font-weight:600; }
 
@@ -483,6 +537,18 @@ const CSS = `
   background:linear-gradient(90deg, var(--h3-accent-dim), transparent 65%);
   border:1px solid var(--h3-line); border-left:3px solid var(--h3-accent);
   border-radius:8px; padding:7px 10px; }
+/* Wordmark. A pseudo-element, so there is no node to hit-test and nothing
+ * enters the flex flow -- the bar lays out exactly as it did without it.
+ * Deliberately oversized and clipped top and bottom by the bar's own height:
+ * that is what makes it read as a watermark rather than a label. */
+.gcast-modebar { position:relative; overflow:hidden; }
+.gcast-modebar::after { content:"H3 STUDIO"; position:absolute; left:50%; top:50%;
+  transform:translate(-50%,-50%); pointer-events:none; user-select:none;
+  font-family:"Bahnschrift","DIN Alternate","Oswald",Impact,
+    ui-sans-serif,system-ui,sans-serif;
+  font-size:31px; font-weight:800; letter-spacing:.16em; white-space:nowrap;
+  color:#ffffff; opacity:.055; }
+.gcast-modebar > * { position:relative; z-index:1; }
 .gcast-seg { display:flex; background:var(--h3-bg); border:1px solid var(--h3-line);
   border-radius:7px; padding:2px; gap:2px; }
 .gcast-seg button { all:unset; pointer-events:auto; cursor:pointer; padding:5px 13px; border-radius:5px;
@@ -518,6 +584,16 @@ const CSS = `
 .gcast-read b { color:var(--h3-txt); font-weight:600; }
 .gcast-toggle { display:flex; background:var(--h3-bg); border:1px solid var(--h3-line);
   border-radius:6px; padding:2px; gap:2px; }
+/* One row: the toggle keeps its width, the multiplier takes the slack on the
+   right. Same height as the toggle so the card does not grow. */
+.gcast-refrow { display:flex; gap:6px; align-items:stretch; }
+.gcast-refrow .gcast-toggle { flex:1 1 auto; min-width:0; }
+.gcast-refmul { flex:0 0 46px; width:46px; text-align:center; padding:0 2px;
+  border-radius:6px; border:1px solid var(--h3-line, #ffffff1f);
+  background:var(--h3-field, #ffffff0a); color:inherit; font:inherit; }
+.gcast-refmul.on { border-color:#45b1d5; color:#45b1d5; }
+.gcast-refmul::-webkit-outer-spin-button,
+.gcast-refmul::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
 .gcast-toggle button { all:unset; pointer-events:auto; cursor:pointer; padding:3px 9px; border-radius:4px;
   font-size:11px; color:var(--h3-dim); }
 .gcast-toggle button[aria-pressed="true"] { background:var(--h3-raise); color:var(--h3-txt); }
@@ -1611,12 +1687,26 @@ function buildUI(node) {
 
   const cRef = el("div", "gcast-card");
   cRef.append(el("div", "gcast-label", "Reference size"));
+  const refRow = el("div", "gcast-refrow");
   const tog = el("div", "gcast-toggle");
   const bMatch = el("button", null, "match");
   const bMax = el("button", "max", "max");
   tog.append(bMatch, bMax);
+  /* Sits beside the toggle rather than under it: the card is one control row
+   * plus one note line, and a second row would push every card below it down. */
+  const inRefine = el("input", "gcast-refmul");
+  inRefine.type = "number";
+  inRefine.min = 1; inRefine.max = 4; inRefine.step = 0.5;
+  inRefine.title =
+    "Refine-pass reference multiplier. 1\u00d7 is the same size as the first "
+    + "pass, which is what happens today. Above that, the reference images are "
+    + "encoded again at this multiple for the SECOND sampler only, so they are "
+    + "not coarser than the latent it is sharpening. Set it to roughly your "
+    + "upscale factor - H3 Studio cannot read the upscaler's setting. Costs one "
+    + "extra text encode and some VRAM on that pass.";
+  refRow.append(tog, inRefine);
   const refNote = el("div", "gcast-read");
-  cRef.append(tog, refNote);
+  cRef.append(refRow, refNote);
 
   row.append(cCanvas, cLen, cRef);
 
@@ -2942,9 +3032,13 @@ function buildUI(node) {
     bMatch.setAttribute("aria-pressed", String(st.ref_image_size === "match"));
     bMax.setAttribute("aria-pressed", String(st.ref_image_size === "max"));
     tog.classList.toggle("warn", st.ref_image_size === "max");
-    refNote.textContent = st.ref_image_size === "match"
+    const refMul = Number(st.ref_refine_scale) || 1;
+    if (document.activeElement !== inRefine) inRefine.value = refMul;
+    inRefine.classList.toggle("on", refMul > 1);
+    refNote.textContent = (st.ref_image_size === "match"
       ? "scaled to the canvas — faster"
-      : "2048px short edge — stronger identity, slower";
+      : "2048px short edge — stronger identity, slower")
+      + (refMul > 1 ? ` · refine ${refMul}\u00d7` : "");
 
     const isFL = st.mode === "fl2va";
     /* fl2va already gives the prompt the leftover room, so Expand has nothing
@@ -4184,8 +4278,13 @@ function buildUI(node) {
   /* Colour follows the CLIP, not its position. Keying it off the index meant
    * every block repainted a different colour the moment anything moved -
    * including the one under the pointer, mid-drag. A clip you are dragging
-   * has to stay the same colour or there is nothing to follow. */
+   * has to stay the same colour or there is nothing to follow.
+   *
+   * An explicit sh.colour wins over the hash. Only a value that is actually
+   * in the palette is honoured, so a hand-edited or older project file can
+   * never put an arbitrary colour into the strip. */
   function tlColour(sh, i) {
+    if (sh && sh.colour && SHOT_COLOURS.indexOf(sh.colour) >= 0) return sh.colour;
     const key = (sh && sh.id) || ("i" + i);
     let h = 0;
     for (let n = 0; n < key.length; n++) h = (h * 31 + key.charCodeAt(n)) >>> 0;
@@ -4303,9 +4402,11 @@ function buildUI(node) {
 
   function paintTimeline() {
     const p = proj();
-    /* One clip is not a film. The strip would say nothing a single block can
-     * not, and it would cost height on every node that never opens a project. */
-    const show = p.shots.length > 1;
+    /* Shown from the first clip on, so the add-clip tool in the head row is
+     * reachable without opening the Project panel. Still hidden at zero, which
+     * is every node that never opens a project -- it would cost height there
+     * for nothing. */
+    const show = p.shots.length >= 1;
     tl.classList.toggle("off", !show);
     if (!show) return;
 
@@ -4328,7 +4429,8 @@ function buildUI(node) {
     const sig = [Math.round(L.pps * 100), Math.round(L.view), p.idx,
                  p2.shots.map((sh, i) => (sh.id || i) + ":" + shotLabel(sh, i)
                    + ":" + Math.round(tlSecs(sh.state) * 100)
-                   + (sh.off ? ":off" : "")).join("|")].join("/");
+                   + (sh.off ? ":off" : "")
+                   + (sh.colour ? ":" + sh.colour : "")).join("|")].join("/");
     if (sig === tlSig && tlStrip.children.length) return;
     tlSig = sig;
     tlStrip.style.width = L.width + "px";
@@ -4350,7 +4452,7 @@ function buildUI(node) {
               + (sh.off
                   ? "  \u2014 SKIPPED, Render all passes over it"
                   : "  \u2014 included in Render all")
-              + "  (double-click to rename, Alt-click to "
+              + "  (double-click to rename, right-click for colour, Alt-click to "
               + (sh.off ? "include" : "skip") + ")";
       if (b.w < 24) d.classList.add("tiny");
       if (sh.off) d.classList.add("off");
@@ -4676,6 +4778,107 @@ function buildUI(node) {
       if (ev.key === "Enter") { ev.preventDefault(); done(true); }
       if (ev.key === "Escape") { ev.preventDefault(); done(false); }
     };
+  });
+
+  /* Right-click a block to set its colour. Follows the dropdown's contract
+   * exactly, and for the same reasons: the popup lives on document.body (a
+   * popup inside the node reflows the panel), it carries its own copy of the
+   * mode dataset because it no longer inherits the panel's CSS variables, it
+   * dismisses on capture-phase pointerUP never pointerdown, and swatches
+   * commit on click. */
+  let cpMenu = null, cpDismissing = false;
+
+  function closeClipPalette() {
+    cpDismissing = false;
+    if (!cpMenu) return;
+    cpMenu.remove();
+    cpMenu = null;
+    document.removeEventListener("pointerdown", cpOutside, true);
+    document.removeEventListener("keydown", cpKey, true);
+    window.removeEventListener("wheel", closeClipPalette, true);
+  }
+  function cpOutside(e) {
+    if (!cpMenu || cpMenu.contains(e.target) || cpDismissing) return;
+    cpDismissing = true;
+    const done = () => {
+      window.removeEventListener("pointerup", done, true);
+      window.removeEventListener("pointercancel", done, true);
+      cpDismissing = false;
+      closeClipPalette();
+    };
+    window.addEventListener("pointerup", done, true);
+    window.addEventListener("pointercancel", done, true);
+  }
+  function cpKey(e) {
+    if (e.key === "Escape") { e.stopPropagation(); closeClipPalette(); }
+  }
+
+  function openClipPalette(i, x, y) {
+    closeClipPalette();
+    const sh = proj().shots[i];
+    if (!sh) return;
+    cpMenu = el("div", "gcast-cpal");
+    cpMenu.dataset.mode = node?.h3ui?.mode
+      || document.querySelector(".gcast")?.dataset.mode || "";
+
+    const gridWrap = el("div", "sw");
+    SHOT_COLOURS.forEach((c) => {
+      const b = el("button", null);
+      b.type = "button";
+      b.style.background = c;
+      b.title = c;
+      if (sh.colour === c) b.classList.add("on");
+      b.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      b.addEventListener("click", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        closeClipPalette();
+        setClipColour(i, c);
+      });
+      gridWrap.append(b);
+    });
+    cpMenu.append(gridWrap);
+
+    /* Auto is not a seventh colour, it is the absence of a choice - back to
+       the id hash, which is what an untouched clip has always used. */
+    const auto = el("button", "auto", "Auto");
+    auto.type = "button";
+    auto.title = "Back to the colour picked from the clip's id";
+    if (!sh.colour) auto.classList.add("on");
+    auto.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    auto.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      closeClipPalette();
+      setClipColour(i, "");
+    });
+    cpMenu.append(auto);
+
+    document.body.append(cpMenu);
+    const w = cpMenu.offsetWidth, h = cpMenu.offsetHeight;
+    cpMenu.style.left = Math.max(6, Math.min(x, window.innerWidth - w - 8)) + "px";
+    cpMenu.style.top = (y + h > window.innerHeight - 8
+      ? Math.max(6, y - h) : y) + "px";
+
+    setTimeout(() => document.addEventListener("pointerdown", cpOutside, true), 0);
+    document.addEventListener("keydown", cpKey, true);
+    window.addEventListener("wheel", closeClipPalette, true);
+  }
+
+  function setClipColour(i, c) {
+    const sh = proj().shots[i];
+    if (!sh) return;
+    sh.colour = c;
+    commit();
+    tlSig = "";                          // force the strip to rebuild
+    paintTimeline(); renderShots();
+  }
+
+  /* preventDefault stops LiteGraph's own canvas context menu coming up behind
+     the palette; stopPropagation keeps the node from treating it as a press. */
+  tlView.addEventListener("contextmenu", (e) => {
+    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    if (!hit) return;
+    e.preventDefault(); e.stopPropagation();
+    openClipPalette(Number(hit.dataset.clip), e.clientX, e.clientY);
   });
 
   /* A new shot in a film usually reuses the same cast and location, so it
@@ -5310,6 +5513,8 @@ function buildUI(node) {
         /* Skipped state travels with the project - reopening a file and finding
            every clip re-enabled would silently re-queue work you had set aside. */
         off: !!(s && s.off),
+        /* Only a palette member survives the round trip - see tlColour(). */
+        colour: (s && SHOT_COLOURS.indexOf(s.colour) >= 0) ? s.colour : "",
         state: parseInitial(JSON.stringify((s && s.state) || {})),
       }));
       if (remap) {
@@ -6095,6 +6300,11 @@ function buildUI(node) {
 
   bMatch.onclick = () => { st.ref_image_size = "match"; render(); commit(); };
   bMax.onclick = () => { st.ref_image_size = "max"; render(); commit(); };
+  inRefine.onchange = () => {
+    const v = Number(inRefine.value);
+    st.ref_refine_scale = Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
+    render(); commit();
+  };
 
   ta.addEventListener("input", () => { st.prompt = ta.value; renderTags(); renderCheck(); maybeAC(); commit(); });
   ta.addEventListener("pointerdown", (e) => e.stopPropagation());

@@ -30,12 +30,18 @@ import json
 import os
 import re
 import shutil
-import subprocess
 
 from aiohttp import web
 
 import folder_paths
 from server import PromptServer
+
+# One audited process boundary for the whole pack: list-form argv, never a
+# shell, and the executable must be one csglide_run resolved itself.
+try:
+    from . import csglide_run as _run
+except ImportError:
+    import csglide_run as _run
 
 # Same folder the node's own uploads go to. Lowercase deliberately: ComfyUI on
 # Linux is case-sensitive and a stray capital splits the folder in two.
@@ -109,26 +115,13 @@ def _unique_path(directory: str, name: str) -> str:
 # --------------------------------------------------------------------------
 
 def _ffprobe_exe() -> str | None:
-    """Best effort at an ffprobe binary.
+    """ffprobe, or None. Resolved by csglide_run, shared with Glide Video.
 
-    imageio-ffmpeg ships ffmpeg but NOT ffprobe, so the sibling-of-ffmpeg guess
-    usually misses and PATH is what actually answers. Returning None is fine --
-    the browser probes the duration itself and this is only the fallback for
-    containers it cannot decode.
+    Previously resolved here with a weaker search (PATH and imageio only).
+    Going through csglide_run means CSGLIDE_FFMPEG and the ComfyUI-tree
+    search apply to these routes too, and there is one resolver to audit.
     """
-    found = shutil.which("ffprobe")
-    if found:
-        return found
-    try:
-        import imageio_ffmpeg  # noqa: WPS433 - optional dependency
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        cand = os.path.join(os.path.dirname(exe),
-                            "ffprobe.exe" if os.name == "nt" else "ffprobe")
-        if os.path.isfile(cand):
-            return cand
-    except Exception:
-        pass
-    return None
+    return _run.ffprobe_path()
 
 
 def _chroma(pix_fmt: str) -> str:
@@ -165,21 +158,9 @@ _PROBE_CACHE_MAX = 256
 def _ffmpeg_exe() -> str | None:
     """ffmpeg, which is present far more often than ffprobe.
 
-    imageio-ffmpeg bundles ffmpeg and NOT ffprobe, so on a stock ComfyUI the
-    probe binary is usually missing while ffmpeg is right there. Parsing
-    `ffmpeg -i` stderr is the fallback the video node already relies on.
+    Re-export; see _ffprobe_exe above.
     """
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-    try:
-        import imageio_ffmpeg  # noqa: WPS433 - optional dependency
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        if exe and os.path.isfile(exe):
-            return exe
-    except Exception:
-        pass
-    return None
+    return _run.ffmpeg_path()
 
 
 _DUR_RE = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
@@ -197,8 +178,11 @@ def _probe_via_ffmpeg(path: str, out: dict) -> None:
     if not exe:
         return
     try:
-        err = subprocess.run([exe, "-hide_banner", "-i", path],
-                             capture_output=True, text=True, timeout=20).stderr
+        # `path` can originate in a request. It is resolved against
+        # ComfyUI's own root by _resolve_inside() before reaching here, and
+        # csglide_run passes it as a single argv element with no shell, so
+        # it is a filename to ffmpeg and cannot become a command.
+        err = _run.run(exe, ["-hide_banner", "-i", path], timeout=20).stderr
     except Exception:
         return
     if not out["duration"]:
@@ -233,13 +217,14 @@ def _probe(path: str) -> dict:
     exe = _ffprobe_exe()
     if exe:
         try:
-            res = subprocess.run(
-                [exe, "-v", "error",
+            # see _probe_via_ffmpeg on where `path` comes from
+            res = _run.run(
+                exe,
+                ["-v", "error",
                  "-select_streams", "v:0",
                  "-show_entries", "format=duration:stream=codec_name,pix_fmt",
                  "-of", "default=nw=1", path],
-                capture_output=True, text=True, timeout=15,
-            ).stdout
+                timeout=15).stdout
             for line in res.splitlines():
                 key_, _, val = line.partition("=")
                 val = val.strip()

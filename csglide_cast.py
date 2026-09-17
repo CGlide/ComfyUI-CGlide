@@ -589,6 +589,9 @@ def parse_h3_data(raw):
         "height": int(data.get("height") or 768),
         "length": int(data.get("length") or 124),
         "ref_image_size": "max" if data.get("ref_image_size") == "max" else "match",
+        # Multiplier for the refine pass's references ONLY. 1.0 = today's
+        # behaviour and nothing extra is encoded. See _refs.
+        "ref_refine_scale": max(1.0, min(4.0, float(data.get("ref_refine_scale") or 1.0))),
         "prompt": str(data.get("prompt") or ""),
         "first": one("first"),
         "last": one("last"),
@@ -990,9 +993,23 @@ class CSGlideCast:
         z = audio_vae.encode(waveform[:1].movedim(1, -1))
         return z, z.shape[-1]
 
-    def _refs(self, cfg, vae, audio_vae, width, height, frame_count):
+    def _refs(self, cfg, vae, audio_vae, width, height, frame_count, scale_mul=1.0):
+        """scale_mul multiplies the size the IMAGE references are encoded at.
+
+        The refine pass samples an upscaled latent, but its references were
+        sized for the base canvas - at 0.5 MP base into a 1.5 MP upscale they
+        are a third of the resolution of the thing being sharpened. Encoding a
+        second, larger set for that pass closes the gap, and the wider the gap
+        the more it is worth: at his own 1.03 -> 1.5 MP it is a small lift, at
+        3x it is not.
+
+        Images only, on purpose. A video reference is frame_count frames, so
+        scaling it multiplies VRAM by the length of the clip for detail that
+        motion conditioning does not carry anyway.
+        """
         ref_items, ref_blocks = [], []
         size_mode = cfg["ref_image_size"]
+        scale_mul = max(1.0, float(scale_mul or 1.0))
 
         for slot in cfg["images"]:
             if slot is None:
@@ -1003,6 +1020,11 @@ class CSGlideCast:
                 scale = min(1.0, math.sqrt((width * height) / (w * h)))
             else:
                 scale = min(1.0, REF_IMAGE_SHORT_EDGE / min(w, h))
+            # Still capped at 1.0: the multiplier lifts a reference back toward
+            # its own pixels, it never invents any. A 4000px source scaled to
+            # 0.3 for the canvas has plenty of room; a 512px one does not, and
+            # stretching that would only cost VRAM.
+            scale = min(1.0, scale * scale_mul)
             tw = max(CANVAS_MULTIPLE, round(w * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
             th = max(CANVAS_MULTIPLE, round(h * scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
             resized = _resize(img[:1], tw, th, "disabled")
@@ -1185,8 +1207,12 @@ class CSGlideCast:
     def build(self, clip, vae, h3_data, audio_vae=None, first_frame=None, last_frame=None):
         cfg = parse_h3_data(h3_data)
 
-        def finish(cond):
-            """Shared tail for both modes: attach the continuation, if any."""
+        def finish(cond, refine_cond=None):
+            """Shared tail for both modes: attach the continuation, if any.
+
+            refine_cond, when given, is a SECOND encode of the same prompt whose
+            image references were built larger (see _refs). It goes out on
+            positive_refine instead of the stripped copy of cond."""
             guide, overlap, guide_frames = self._continuation(
                 cfg, vae, audio_vae, latent, width, height, frame_count)
             # exactly what was encoded, so the anchored run can be LOOKED AT
@@ -1203,7 +1229,9 @@ class CSGlideCast:
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
             return (cond, latent, width, height, frame_count, seconds, overlap,
-                    source, guide_frames, self._without_keyframes(cond),
+                    source, guide_frames,
+                    self._without_keyframes(refine_cond
+                                            if refine_cond is not None else cond),
                     clip_label(cfg))
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
@@ -1253,11 +1281,29 @@ class CSGlideCast:
         if presentation:
             print("[H3 Studio] presentation: " + "  ".join("%s %s" % p for p in presentation))
 
-        tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
-        cond = clip.encode_from_tokens_scheduled(tokens)
-        if ref_blocks:
-            cond = node_helpers.conditioning_set_values(cond, {"minimax_refs": ref_blocks})
-        return finish(cond)
+        def _encode(items, blocks):
+            tokens = clip.tokenize(prompt, minimax_ref_items=items)
+            c = clip.encode_from_tokens_scheduled(tokens)
+            if blocks:
+                c = node_helpers.conditioning_set_values(c, {"minimax_refs": blocks})
+            return c
+
+        cond = _encode(ref_items, ref_blocks)
+
+        # The whole prompt is encoded a second time rather than swapping the
+        # latents under the first one: the references go into tokenize() as well
+        # as into minimax_refs, so a conditioning holding blocks of one size and
+        # tokens built from another is a mismatch waiting to surface inside the
+        # sampler. Costs one extra text encode, and only when asked for.
+        refine_cond = None
+        refine_mul = cfg.get("ref_refine_scale") or 1.0
+        if refine_mul > 1.0 and any(s is not None for s in cfg["images"]):
+            print("[H3 Studio] refine references at %.2gx" % refine_mul)
+            r_items, r_blocks = self._refs(cfg, vae, audio_vae, width, height,
+                                           frame_count, scale_mul=refine_mul)
+            refine_cond = _encode(r_items, r_blocks)
+
+        return finish(cond, refine_cond)
 
     @classmethod
     def IS_CHANGED(cls, h3_data, **kwargs):
