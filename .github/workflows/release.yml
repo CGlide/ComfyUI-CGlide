@@ -74,11 +74,25 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
-          # --generate-notes writes the notes from the commits since the last
-          # release, so you get something readable without keeping a notes file.
-          # Edit them afterwards on the Releases page whenever you want better.
-          gh release create "${TAG}" \
-            "dist/ComfyUI-CGlide-v${VERSION}.zip" \
-            --target "${GITHUB_SHA}" \
-            --title "CGlide ${TAG}" \
-            --generate-notes
+          # Hand-written notes win when they exist: drop notes/<version>.md in
+          # the repo and it becomes the body, with the commit list appended
+          # under it by --generate-notes. No file, no problem -- you just get
+          # the generated notes on their own, same as before. Either way the
+          # body is editable afterwards on the Releases page.
+          notes="notes/${VERSION}.md"
+          if [[ -f "${notes}" ]]; then
+            echo "Using ${notes} as the release body."
+            gh release create "${TAG}" \
+              "dist/ComfyUI-CGlide-v${VERSION}.zip" \
+              --target "${GITHUB_SHA}" \
+              --title "CGlide ${TAG}" \
+              --notes-file "${notes}" \
+              --generate-notes
+          else
+            echo "No ${notes} -- falling back to generated notes."
+            gh release create "${TAG}" \
+              "dist/ComfyUI-CGlide-v${VERSION}.zip" \
+              --target "${GITHUB_SHA}" \
+              --title "CGlide ${TAG}" \
+              --generate-notes
+          fi
