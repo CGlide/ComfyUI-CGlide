@@ -9,12 +9,13 @@ It reports which ffmpeg was found and which encoders that build has.
 """
 
 import os
+import sys
 
 # This script is run directly with ComfyUI's python, so it cannot use a
 # package-relative import. csglide_run sits next to it either way.
-sys_path_added = os.path.dirname(os.path.abspath(__file__))
-if sys_path_added not in __import__("sys").path:
-    __import__("sys").path.insert(0, sys_path_added)
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
 
 import csglide_run as _run
 
