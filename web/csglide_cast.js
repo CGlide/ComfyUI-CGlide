@@ -1,6 +1,11 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+/* Printed once when the file loads: tells you at a glance, in the F12
+ * console, which build the browser is actually running (cache or not). */
+const H3_STUDIO_UI_BUILD = "2026-09-26a - refine dropdown";
+console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
+
 /* =========================================================================
  * H3 Studio — UI
  *
@@ -536,7 +541,11 @@ const CSS = `
 .gcast-modebar { display:flex; align-items:center; gap:10px;
   background:linear-gradient(90deg, var(--h3-accent-dim), transparent 65%);
   border:1px solid var(--h3-line); border-left:3px solid var(--h3-accent);
-  border-radius:8px; padding:7px 10px; }
+  border-radius:8px; padding:0 10px;
+  /* Same height as the timeline strip above it (41px each): a fixed height,
+     not padding, so the two blocks match whatever the buttons' font does.
+     align-items centres the switch inside it. */
+  height:41px; box-sizing:border-box; }
 /* Wordmark. A pseudo-element, so there is no node to hit-test and nothing
  * enters the flex flow -- the bar lays out exactly as it did without it.
  * Deliberately oversized and clipped top and bottom by the bar's own height:
@@ -551,7 +560,7 @@ const CSS = `
 .gcast-modebar > * { position:relative; z-index:1; }
 .gcast-seg { display:flex; background:var(--h3-bg); border:1px solid var(--h3-line);
   border-radius:7px; padding:2px; gap:2px; }
-.gcast-seg button { all:unset; pointer-events:auto; cursor:pointer; padding:5px 13px; border-radius:5px;
+.gcast-seg button { all:unset; pointer-events:auto; cursor:pointer; padding:3px 13px; border-radius:5px;
   font-size:11.5px; font-weight:600; color:var(--h3-dim); transition:.13s; }
 .gcast-seg button:hover { color:var(--h3-txt); }
 .gcast-seg button[aria-pressed="true"] { background:var(--h3-accent); color:#101010; }
@@ -592,6 +601,8 @@ const CSS = `
   border-radius:6px; border:1px solid var(--h3-line, #ffffff1f);
   background:var(--h3-field, #ffffff0a); color:inherit; font:inherit; }
 .gcast-refmul.on { border-color:#45b1d5; color:#45b1d5; }
+.gcast-refrow .gcast-select { flex:0 0 auto; }
+.gcast-refrow .gcast-select.on { border-color:#45b1d5; color:#45b1d5; }
 .gcast-refmul::-webkit-outer-spin-button,
 .gcast-refmul::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
 .gcast-toggle button { all:unset; pointer-events:auto; cursor:pointer; padding:3px 9px; border-radius:4px;
@@ -772,7 +783,7 @@ const CSS = `
 .gcast-tl .rule .lbl { position:absolute; top:0; margin-left:3px; line-height:1;
   font-family:ui-monospace,Consolas,monospace; font-size:8px; color:var(--h3-dim);
   opacity:.75; }
-.gcast-tl .view { position:relative; height:36px; overflow:hidden; border-radius:7px;
+.gcast-tl .view { position:relative; height:41px; overflow:hidden; border-radius:7px;
   background:var(--h3-well); box-shadow:inset 0 1px 3px rgba(0,0,0,.38);
   touch-action:none; }
 .gcast-tl .view.pannable { cursor:grab; }
@@ -804,10 +815,10 @@ const CSS = `
 .gcast-tl .clip::before { content:""; position:absolute; left:0; top:0; bottom:0;
   width:4px; border-radius:6px 0 0 6px; background:var(--c, #444); }
 .gcast-tl .clip.nomove { transition:filter .12s ease, box-shadow .12s ease; }
-.gcast-tl .clip .nm { font-size:10px; line-height:1.15; color:#fff; opacity:.96;
+.gcast-tl .clip .nm { font-size:12px; line-height:1.15; color:#fff; opacity:.96;
   text-shadow:0 1px 2px rgba(0,0,0,.55); white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; }
-.gcast-tl .clip .du { font-family:ui-monospace,Consolas,monospace; font-size:8px;
+.gcast-tl .clip .du { font-family:ui-monospace,Consolas,monospace; font-size:9.5px;
   line-height:1; color:#fff; opacity:.66; text-shadow:0 1px 2px rgba(0,0,0,.55);
   white-space:nowrap; }
 .gcast-tl .clip:hover { filter:brightness(1.18); }
@@ -838,6 +849,39 @@ const CSS = `
   background:#fff; border-radius:2px;
   box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 9px rgba(255,255,255,.75);
   pointer-events:none; z-index:3; }
+/* Links. A linked pair is drawn as one run: no gap between the blocks, the
+   touching corners squared off, and an accent rule along the bottom of every
+   block in the run - readable at any zoom, including blocks too narrow for
+   the button. The rule is an ::after because the block clips its own
+   overflow and ::before is already the colour edge. */
+.gcast-tl .clip.lp { border-top-left-radius:0; border-bottom-left-radius:0; }
+.gcast-tl .clip.lp::before { border-radius:0; }
+.gcast-tl .clip.ln { border-top-right-radius:0; border-bottom-right-radius:0; }
+.gcast-tl .clip.lk::after { content:""; position:absolute; left:0; right:0; bottom:0;
+  height:2px; opacity:.9; pointer-events:none;
+  /* dashed, like a chain: 6px on, 4px off */
+  /* the CONTINUE FROM orange: a link is that slot, seen from the timeline */
+  background:repeating-linear-gradient(90deg, #ff9f43 0 6px, transparent 6px 10px); }
+/* The control sits ON the seam, in the strip rather than in either block -
+   both blocks clip their overflow, so a child of one could not straddle the
+   edge. Invisible at rest when unlinked so it does not litter every boundary;
+   the whole strip reveals them on hover. Linked ones stay lit. */
+.gcast-tl .lnk { position:absolute; top:calc(50% - 8px); width:16px; height:16px;
+  margin-left:-8px; padding:0; border:1px solid #ffffff38; border-radius:50%;
+  background:#141414e6; color:#bdbdbd; display:grid; place-items:center;
+  cursor:pointer; pointer-events:auto; z-index:4; opacity:0;
+  transition:opacity .12s ease, border-color .12s ease, color .12s ease; }
+.gcast-tl .lnk svg { width:10px; height:10px; fill:none; stroke:currentColor;
+  stroke-width:1.5; stroke-linecap:round; }
+.gcast-tl .view:hover .lnk { opacity:.6; }
+.gcast-tl .lnk:hover { opacity:1; color:#fff; border-color:#ff9f43; }
+.gcast-tl .lnk.on { opacity:1; background:#ff9f43; border-color:#ff9f43;
+  color:#111; }
+.gcast-tl .view:hover .lnk.on { opacity:1; }
+/* Blocks slide during a drag and the seams move with them, so the controls
+   would sit on boundaries that no longer exist. Gone until the drop repaints. */
+.gcast-tl .strip.dragging .lnk { display:none; }
+.gcast-tl .clip.virtual { cursor:default; }
 .gcast-wav { width:100%; height:34px; background:var(--h3-well); border-radius:5px; cursor:pointer;
   display:flex; align-items:center; justify-content:center; color:#525252; font-size:11px; }
 
@@ -1105,8 +1149,8 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 .gcast-btn.shots.nav.gear .ico { color:#9a9a9a; }
 .gcast-btn.shots.nav.gear:hover { border-color:#6b6b6b; }
 .gcast-btn.shots.nav.gear:hover .ico { color:#e2e2e2; }
-.gcast-bar .name { font-family:ui-monospace,Consolas,monospace; font-size:11px;
-  color:var(--h3-txt); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.gcast-bar .name { font-family:ui-monospace,Consolas,monospace; font-size:12.5px;
+  font-weight:600; color:var(--h3-txt); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .gcast-bar .name .dirty { color:var(--h3-dim); }
 .gcast-bar .name .shot { color:#c9aeff; }
 /* The clip's own name, and the project it belongs to. Both are one glance
@@ -1694,9 +1738,18 @@ function buildUI(node) {
   tog.append(bMatch, bMax);
   /* Sits beside the toggle rather than under it: the card is one control row
    * plus one note line, and a second row would push every card below it down. */
+  const REFINE_PRESETS = [1, 1.5, 2, 2.5, 3, 3.5, 4];
+  const selRefine = makeSelect(node);
+  selRefine.setOptions(REFINE_PRESETS.map((m) => ({
+    label: `${m}\u00d7`, value: String(m), note: m === 1 ? "same as pass 1" : "refine only",
+  })).concat([{ label: "Custom", value: "custom", note: "1 \u2013 4" }]));
+  /* The number field only shows for Custom, so the row stays one control
+     wide in the usual case. refineCustom keeps it open while you type, even
+     when what you type happens to be a preset value. */
+  let refineCustom = false;
   const inRefine = el("input", "gcast-refmul");
   inRefine.type = "number";
-  inRefine.min = 1; inRefine.max = 4; inRefine.step = 0.5;
+  inRefine.min = 1; inRefine.max = 4; inRefine.step = 0.05;
   inRefine.title =
     "Refine-pass reference multiplier. 1\u00d7 is the same size as the first "
     + "pass, which is what happens today. Above that, the reference images are "
@@ -1704,7 +1757,8 @@ function buildUI(node) {
     + "not coarser than the latent it is sharpening. Set it to roughly your "
     + "upscale factor - H3 Studio cannot read the upscaler's setting. Costs one "
     + "extra text encode and some VRAM on that pass.";
-  refRow.append(tog, inRefine);
+  selRefine.el.title = inRefine.title;
+  refRow.append(tog, selRefine.el, inRefine);
   const refNote = el("div", "gcast-read");
   cRef.append(refRow, refNote);
 
@@ -3033,8 +3087,13 @@ function buildUI(node) {
     bMax.setAttribute("aria-pressed", String(st.ref_image_size === "max"));
     tog.classList.toggle("warn", st.ref_image_size === "max");
     const refMul = Number(st.ref_refine_scale) || 1;
+    const refPreset = REFINE_PRESETS.includes(refMul);
+    const refShowCustom = refineCustom || !refPreset;
+    selRefine.value = refShowCustom ? "custom" : String(refMul);
+    inRefine.style.display = refShowCustom ? "" : "none";
     if (document.activeElement !== inRefine) inRefine.value = refMul;
     inRefine.classList.toggle("on", refMul > 1);
+    selRefine.el.classList.toggle("on", refMul > 1);
     refNote.textContent = (st.ref_image_size === "match"
       ? "scaled to the canvas — faster"
       : "2048px short edge — stronger identity, slower")
@@ -4116,7 +4175,115 @@ function buildUI(node) {
     if (!p || !Array.isArray(p.shots)) {
       node.properties.gcast_project = { name: "", shots: [], idx: -1 };
     }
-    return node.properties.gcast_project;
+    const P = node.properties.gcast_project;
+    /* Once, on the first project this build sees that predates links. The
+       marker is only ever written once a project HAS clips - LiteGraph merges
+       saved properties over the fresh ones on load, so a marker written to an
+       empty node before configure() would survive onto an old workflow and
+       stop it ever being migrated. */
+    if (!node.properties.gcast_links && P.shots.length) migrateLinks(P);
+    return P;
+  }
+
+  /* ================================================================ links
+   *
+   * A link lives on the LATER clip: shots[i].link means "clip i continues
+   * from clip i-1". That is the clip whose CONTINUE FROM gets filled, so the
+   * flag sits where it is consumed, and clip 0 can never carry one.
+   *
+   * The link is the only thing that decides chaining now. The old project-wide
+   * chained / separate dropdown is gone - two sources of truth for the same
+   * decision is how a run ends up chaining something you did not link.
+   *
+   * A link describes two specific clips being next to each other. Anything
+   * that changes a clip's predecessor - a move, a delete - breaks the link on
+   * that clip, and with it the CONTINUE FROM the link was filling.
+   */
+
+  /* Evidence, not the old dropdown. A clip that already holds a CONTINUE FROM
+     file was continued from something - by a chained run, or by hand with
+     `last render` - so that is the clip that gets linked. The dropdown cannot
+     tell you that: it defaulted to chained, so an untouched one would link
+     every clip of a project that was never chain-rendered at all. */
+  function inferLinks(shots) {
+    shots.forEach((s, k) => {
+      if (!s) return;
+      const c = s.state && s.state.cont;
+      s.link = k > 0 && !!(c && c.file);
+    });
+  }
+
+  function migrateLinks(P) {
+    const props = node.properties;
+    inferLinks(P.shots);
+    /* The look bit used to be remembered per mode. Keep what was set for the
+       mode this node was actually on; it now applies to unlinked clips only. */
+    if (props.gcast_run_look === undefined) {
+      const mode = props.gcast_run_mode || "continue";
+      const v = mode === "continue" ? props.gcast_run_look_continue
+                                    : props.gcast_run_look_separate;
+      /* an explicit off is kept; anything never set takes the new default */
+      props.gcast_run_look = mode === "carry" ? true : v !== false;
+    }
+    delete props.gcast_run_mode;
+    delete props.gcast_run_look_continue;
+    delete props.gcast_run_look_separate;
+    props.gcast_links = 1;
+    const n = P.shots.filter((s) => s && s.link).length;
+    console.log(`[H3 Studio] links: migrated this project, ${n} link${n === 1 ? "" : "s"} `
+              + "from clips that already held a CONTINUE FROM");
+  }
+
+  /* Map of clip object -> the clip object before it, taken BEFORE a list
+     operation so heal can tell which clips got a new neighbour. By object, not
+     index: after a move every index past the move is different, but most
+     clips still sit behind the same clip they did before. */
+  function linkPreds(p) {
+    const m = new Map();
+    p.shots.forEach((s, k) => m.set(s, k > 0 ? p.shots[k - 1] : null));
+    return m;
+  }
+
+  function healLinks(p, before) {
+    p.shots.forEach((s, k) => {
+      if (!s || !s.link) return;
+      const pred = k > 0 ? p.shots[k - 1] : null;
+      if (pred && before && before.get(s) === pred) return;
+      s.link = false;
+      dropContinuation(k);
+      console.log(`[H3 Studio] links: ${shotLabel(s, k)} has a new neighbour, unlinked`);
+    });
+  }
+
+  /* The link OWNS the CONTINUE FROM slot and the seam reference beside it:
+     the run fills them, so when the link goes they go with it. Left in place,
+     an unlinked clip would quietly go on continuing from a render it is no
+     longer attached to. Nothing is lost - relink it and the next render fills
+     both again from the neighbour's last render. */
+  function dropContinuation(i) {
+    const p = proj();
+    const sh = p.shots[i];
+    if (!sh) return;
+    const live = i === p.idx;
+    const s = live ? st : sh.state;
+    if (!s) return;
+    if (s.cont && typeof s.cont === "object") clearSlot(s.cont);
+    const vids = (s.slots && s.slots.videos) || [];
+    const seam = vids[SEAM_REF_SLOT];
+    if (seam && seam.seam) clearSlot(seam);
+    if (live) { render(); stash(); }
+  }
+
+  function toggleLink(i) {
+    if (run) return;                      // the run owns the slots it is filling
+    const p = proj();
+    const sh = p.shots[i];
+    if (!sh || i < 1) return;
+    sh.link = !sh.link;
+    if (!sh.link) dropContinuation(i);
+    commit();
+    tlSig = "";                           // force the strip to rebuild
+    paintTimeline(); renderShots();
   }
 
   /* ---- previous state: the .bak, kept in the workflow ----------------
@@ -4316,8 +4483,11 @@ function buildUI(node) {
   function tlLayout() {
     const p = proj();
     const view = tlView.clientWidth || 0;
-    if (!view || !p.shots.length) { tlLay = null; return null; }
-    const secs = p.shots.map(tlShotSecs);
+    if (!view) { tlLay = null; return null; }
+    /* No project yet: the screen itself is Clip 1. Nothing is stored for it -
+       the block is drawn from the live state, and + makes it a real project. */
+    const virtual = !p.shots.length;
+    const secs = virtual ? [tlSecs(st)] : p.shots.map(tlShotSecs);
     const total = secs.reduce((a, b) => a + b, 0) || 1;
     /* Straight proportion, times the zoom. It used to be
      *   max(fit, MIN_WIDTH / shortestClip)
@@ -4335,7 +4505,7 @@ function buildUI(node) {
     const width = x;
     tlPan = Math.max(0, Math.min(tlPan, Math.max(0, width - view)));
     tlPanTo = Math.max(0, Math.min(tlPanTo, Math.max(0, width - view)));
-    tlLay = { pps, width, view, total, blocks };
+    tlLay = { pps, width, view, total, blocks, virtual };
     return tlLay;
   }
 
@@ -4402,19 +4572,41 @@ function buildUI(node) {
 
   function paintTimeline() {
     const p = proj();
-    /* Shown from the first clip on, so the add-clip tool in the head row is
-     * reachable without opening the Project panel. Still hidden at zero, which
-     * is every node that never opens a project -- it would cost height there
-     * for nothing. */
-    const show = p.shots.length >= 1;
-    tl.classList.toggle("off", !show);
-    if (!show) return;
+    /* Always shown, project or not, so the timeline and its + are where you
+     * expect them from the first second. Without a project the screen is drawn
+     * as a single Clip 1 (see tlLayout). */
+    tl.classList.toggle("off", false);
 
     const L = tlLayout();
     if (!L) return;             // no width yet; the ResizeObserver will call back
 
     tlStrip.style.left = (-tlPan) + "px";
     paintRule(L);
+
+    if (L.virtual) {
+      const vsig = ["V", Math.round(L.pps * 100), Math.round(L.view), Math.round(L.total * 100)].join("/");
+      if (vsig === tlSig && tlStrip.children.length) return;
+      tlSig = vsig;
+      tlStrip.style.width = L.width + "px";
+      tlStrip.replaceChildren();
+      const b = L.blocks[0];
+      const vsh = { id: "", name: "" };
+      /* .virtual keeps every block handler (select, drag, rename, colour,
+         skip) off it: there is no stored clip behind it to act on. */
+      const d = el("div", "clip on virtual");
+      d.style.left = b.x + "px";
+      d.style.width = Math.max(3, b.w - 2) + "px";
+      const c = tlColour(vsh, 0);
+      d.style.setProperty("--c", c);
+      d.style.setProperty("--cg", c + "5c");
+      d.style.setProperty("--cw", c + "24");
+      d.title = shotLabel(vsh, 0) + " \u2014 " + fmtSecs(b.sec)
+              + "  \u2014 the current setup. + adds a second clip and starts a project.";
+      d.append(el("div", "nm", shotLabel(vsh, 0)));
+      if (b.w >= 74) d.append(el("div", "du", fmtSecs(b.sec)));
+      tlStrip.append(d);
+      return;
+    }
 
     /* Rebuild the blocks only when they would come out different.
      *
@@ -4430,6 +4622,7 @@ function buildUI(node) {
                  p2.shots.map((sh, i) => (sh.id || i) + ":" + shotLabel(sh, i)
                    + ":" + Math.round(tlSecs(sh.state) * 100)
                    + (sh.off ? ":off" : "")
+                   + (sh.link ? ":L" : "")
                    + (sh.colour ? ":" + sh.colour : "")).join("|")].join("/");
     if (sig === tlSig && tlStrip.children.length) return;
     tlSig = sig;
@@ -4438,8 +4631,15 @@ function buildUI(node) {
     L.blocks.forEach((b) => {
       const sh = p.shots[b.i];
       const d = el("div", "clip" + (b.i === p.idx ? " on" : ""));
+      /* A linked pair closes the 2px gap, so the run reads as one object */
+      const lp = b.i > 0 && !!sh.link;
+      const nx = p.shots[b.i + 1];
+      const ln = !!(nx && nx.link);
       d.style.left = b.x + "px";
-      d.style.width = Math.max(3, b.w - 2) + "px";
+      d.style.width = Math.max(3, b.w - (ln ? 0 : 2)) + "px";
+      if (lp) d.classList.add("lp");
+      if (ln) d.classList.add("ln");
+      if (lp || ln) d.classList.add("lk");
       const c = tlColour(sh, b.i);
       d.style.setProperty("--c", c);            // solid edge down the left
       d.style.setProperty("--cg", c + "5c");    // bloom hugging that edge
@@ -4449,9 +4649,10 @@ function buildUI(node) {
          the same whichever way the clip is set: you should not have to work
          out from a grey block what Alt-click is about to do. */
       d.title = shotLabel(sh, b.i) + " \u2014 " + fmtSecs(b.sec)
+              + (lp ? "  \u2014 continues from " + shotLabel(p.shots[b.i - 1], b.i - 1) : "")
               + (sh.off
-                  ? "  \u2014 SKIPPED, Render all passes over it"
-                  : "  \u2014 included in Render all")
+                  ? "  \u2014 SKIPPED, Render passes over it"
+                  : "  \u2014 included in Render")
               + "  (double-click to rename, right-click for colour, Alt-click to "
               + (sh.off ? "include" : "skip") + ")";
       if (b.w < 24) d.classList.add("tiny");
@@ -4462,8 +4663,8 @@ function buildUI(node) {
       if (b.w >= 46) {
         const sk = el("button", "sk", sh.off ? "\u25CB" : "\u25CF");
         sk.title = sh.off
-          ? "Skipped \u2014 Render all will pass over this clip. Click to include it."
-          : "Included in Render all. Click to skip it.";
+          ? "Skipped \u2014 Render will pass over this clip. Click to include it."
+          : "Included in Render. Click to skip it.";
         sk.onclick = (ev) => { ev.stopPropagation(); toggleSkip(b.i); };
         d.classList.add("hasdot");
         d.append(sk);
@@ -4473,6 +4674,34 @@ function buildUI(node) {
        * narrow to hold both -- a clipped number is worse than no number */
       if (b.w >= 74) d.append(el("div", "du", fmtSecs(b.sec)));
       tlStrip.append(d);
+    });
+
+    /* One control per seam, appended after the blocks so it stacks above
+       both. Needs a few pixels of block either side of it or it covers the
+       labels it sits between - below that the run still shows as joined, and
+       zooming in brings the control back. */
+    L.blocks.forEach((b) => {
+      if (b.i < 1) return;
+      const prev = L.blocks[b.i - 1];
+      if (Math.min(prev.w, b.w) < 30) return;
+      const sh = p.shots[b.i];
+      const on = !!sh.link;
+      const k = el("button", "lnk" + (on ? " on" : ""));
+      k.type = "button";
+      k.dataset.link = String(b.i);
+      k.style.left = (b.x - 1) + "px";
+      k.innerHTML = '<svg viewBox="0 0 12 12">'
+        + '<path d="M5 7 7 5"/>'
+        + '<path d="M4.4 5.6 3.2 6.8a1.9 1.9 0 0 0 2.7 2.7l1.2-1.2"/>'
+        + '<path d="M7.6 6.4l1.2-1.2a1.9 1.9 0 0 0-2.7-2.7L4.9 3.7"/>'
+        + "</svg>";
+      const a = shotLabel(p.shots[b.i - 1], b.i - 1), z = shotLabel(sh, b.i);
+      k.title = on
+        ? `${z} continues from ${a}: Render fills its CONTINUE FROM with the tail `
+          + `of ${a}'s last render. Click to unlink \u2014 that CONTINUE FROM is cleared.`
+        : `Link: ${z} continues from ${a}, as one take.`;
+      k.onclick = (ev) => { ev.stopPropagation(); toggleLink(b.i); };
+      tlStrip.append(k);
     });
   }
 
@@ -4544,12 +4773,14 @@ function buildUI(node) {
     const p = proj();
     if (to < 0 || to > p.shots.length - 1) { paintTimeline(); return; }
     const cur = p.idx >= 0 ? p.shots[p.idx] : null;
+    const before = linkPreds(p);
     const [it] = p.shots.splice(from, 1);
     p.shots.splice(to, 0, it);
     /* follow the OBJECT, not the index: whichever clip was on screen stays on
      * screen, wherever the move put it */
     if (cur) p.idx = p.shots.indexOf(cur);
     shotsFocus = p.idx;
+    healLinks(p, before);
     commit(); paintShotsBtn(); paintPresetName(); renderShots();
   }
 
@@ -4625,6 +4856,12 @@ function buildUI(node) {
   const tlDown = (e) => {
     if (!tlView.contains(e.target)) return;
     if (e.target.tagName === "INPUT") return;   // renaming; let the field have it
+    /* A seam control: claimed like a block press so neither frontend starts a
+       canvas drag, but not a drag or a pan itself - its own click does the work. */
+    if (e.target.closest && e.target.closest(".lnk")) {
+      if (e.button === 0) { e.preventDefault(); e.stopPropagation(); }
+      return;
+    }
     const L = tlLay;
     if (!L) return;
 
@@ -4632,7 +4869,7 @@ function buildUI(node) {
     if (e.button === 1) { tlStartPan(e); return; }
     if (e.button !== 0) return;
 
-    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    const hit = e.target.closest ? e.target.closest(".clip:not(.virtual)") : null;
     if (!hit) { tlStartPan(e); return; }
 
     const from = Number(hit.dataset.clip);
@@ -4695,6 +4932,7 @@ function buildUI(node) {
         if (Math.abs(ev.clientX - x0) < 5 && Math.abs(ev.clientY - y0) < 5) return;
         dragging = true;
         hit.classList.add("lifted", "nomove");   // the held block does not slide
+        tlStrip.classList.add("dragging");
         mark = el("div", "drop");
         tlStrip.append(mark);
         /* the ghost lives on document.body, which carries none of the panel's
@@ -4721,6 +4959,7 @@ function buildUI(node) {
       if (ghost) ghost.remove();
       if (mark) mark.remove();
       hit.classList.remove("lifted", "nomove");
+      tlStrip.classList.remove("dragging");
       ev.stopPropagation();
       if (dragging) {
         tlDragEnd = Date.now();
@@ -4737,7 +4976,7 @@ function buildUI(node) {
     /* a release at the end of a drag arrives here as a click */
     if (Date.now() - tlDragEnd < 250) return;
     if (e.target.tagName === "INPUT") return;
-    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    const hit = e.target.closest ? e.target.closest(".clip:not(.virtual)") : null;
     if (!hit) return;
     /* Alt is already "the other thing" everywhere else in this node (save,
        carry last, slot reorder), and a modifier cannot fire while you are
@@ -4750,7 +4989,7 @@ function buildUI(node) {
    * Escape drops it. Typed into the block itself so there is no doubt about
    * which clip is being renamed. */
   tlView.addEventListener("dblclick", (e) => {
-    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    const hit = e.target.closest ? e.target.closest(".clip:not(.virtual)") : null;
     if (!hit || hit.querySelector("input")) return;
     e.preventDefault(); e.stopPropagation();
     const i = Number(hit.dataset.clip);
@@ -4875,7 +5114,7 @@ function buildUI(node) {
   /* preventDefault stops LiteGraph's own canvas context menu coming up behind
      the palette; stopPropagation keeps the node from treating it as a press. */
   tlView.addEventListener("contextmenu", (e) => {
-    const hit = e.target.closest ? e.target.closest(".clip") : null;
+    const hit = e.target.closest ? e.target.closest(".clip:not(.virtual)") : null;
     if (!hit) return;
     e.preventDefault(); e.stopPropagation();
     openClipPalette(Number(hit.dataset.clip), e.clientX, e.clientY);
@@ -4898,6 +5137,8 @@ function buildUI(node) {
       p.shots.push({ id: uid(), name: "", state: clone(st) });
       p.idx = 0;
     }
+    /* A project born in this build has nothing to migrate */
+    node.properties.gcast_links = 1;
   }
 
   function addShot(blank) {
@@ -5067,63 +5308,108 @@ function buildUI(node) {
         : "Finish the clip being rendered, then stop. Clips already done are kept.";
     }
     runBox.querySelector(".sub").textContent =
-      run.note || ((run.mode === "continue"
-                    ? ("chained through CONTINUE FROM"
-                       + (run.look ? " + look through video slot 1" : ""))
-                  : run.look ? "look carried through video slot 1"
-                  : "clips rendered separately")
-                 + (run.skipped ? `, ${run.skipped} skipped` : ""));
+      run.note || (scopeText(run.scope)
+                   + (run.links ? `, ${run.links} link${run.links === 1 ? "" : "s"}` : "")
+                   + (run.look ? ", look carried across cuts" : "")
+                   + (run.skipped ? `, ${run.skipped} skipped` : ""));
     bShotsLbl.textContent = `Rendering ${run.k + 1}/${run.total}`;
   }
 
-  async function renderAll(mode, alsoLook) {
+  /* Which clips a scope covers, in project order. The chain is the linked
+     run the clip belongs to: back while this clip continues from the one
+     before it, forward while the next one continues from this. A clip on its
+     own is a chain of one. */
+  const SCOPES = [
+    ["clip", "this clip"],
+    ["chain", "this chain"],
+    ["from", "from this clip on"],
+    ["all", "whole project"],
+  ];
+  const scopeText = (sc) => ({
+    clip: "this clip", chain: "this chain",
+    from: "from this clip to the end", all: "the whole project",
+  }[sc] || "the whole project");
+
+  function scopeRange(scope, a) {
+    const p = proj();
+    const n = p.shots.length;
+    if (!n) return [];
+    a = Math.min(Math.max(0, a | 0), n - 1);
+    let s = 0, e = n - 1;
+    if (scope === "clip") { s = a; e = a; }
+    else if (scope === "from") { s = a; }
+    else if (scope === "chain") {
+      s = a; e = a;
+      while (s > 0 && p.shots[s].link) s--;
+      while (e + 1 < n && p.shots[e + 1].link) e++;
+    }
+    const out = [];
+    for (let i = s; i <= e; i++) out.push(i);
+    return out;
+  }
+
+  /* One loop for every scope. What a clip gets is decided by the clip, not by
+     the run: a linked clip continues from its neighbour's LAST RENDER
+     (shots[i-1].lastOut), whether that render happened a second ago in this
+     run or last week. That is what makes a scope that starts mid-chain work,
+     and what lets one link be re-rolled on its own. A skipped clip inside the
+     range still hands its old render to the next one. */
+  async function renderAll(scope, alsoLook) {
     if (run) return;
-    /* Chain and look are orthogonal. Chaining is the guide: frame-accurate at
-       the seam, and nothing after it. A look carry is an ordinary video
-       reference: no timing at all, but it holds grade and identity across the
-       whole clip. Over a 12s continuation the guide's hold fades and the look
-       drifts, so the two together is a real combination. "carry" is the look
-       bit on its own; "continue" can now take it as well. */
-    let look = !!alsoLook;
-    /* Legacy: "carry" was separate+look before the two were split apart. A
-       project saved then can still reach here through gcast_run_mode. */
-    if (mode === "carry") { mode = "separate"; look = true; }
+    const look = !!alsoLook;
     const p = proj();
     if (!p.shots.length) {
       alert("H3 Studio: this project has no clips yet.");
       return;
     }
-    /* The queue, not the list. Everything downstream counts in queue positions:
-       the chain and carry steps ask "is this the first clip being rendered",
-       which is not the same question as "is this clip 1" once anything is
-       skipped. */
-    const queue = p.shots.map((_, i) => i).filter((i) => !p.shots[i].off);
+    stash();
+    const range = scopeRange(scope, p.idx >= 0 ? p.idx : 0);
+    /* "This clip" is an explicit ask, so it renders even a skipped clip. The
+       wider scopes are where skip is for. */
+    const queue = scope === "clip" ? range.slice() : range.filter((i) => !p.shots[i].off);
     if (!queue.length) {
-      alert("H3 Studio: every clip in this project is skipped.");
+      alert("H3 Studio: every clip in that range is skipped.");
       return;
     }
+
+    /* Refuse up front rather than three clips in. A linked clip needs either
+       its neighbour rendered earlier in this run, a recorded last render of
+       that neighbour, or a CONTINUE FROM already filled (a project from before
+       lastOut existed, where the old run left the tail in place). */
+    const inRun = new Set(queue);
+    const contOf = (i) => (i === p.idx ? st.cont : ((p.shots[i].state || {}).cont));
+    const orphan = queue.find((i) => i > 0 && p.shots[i].link && !inRun.has(i - 1)
+                                     && !p.shots[i - 1].lastOut
+                                     && !((contOf(i) || {}).file));
+    if (orphan !== undefined) {
+      const a = shotLabel(p.shots[orphan - 1], orphan - 1);
+      alert(`H3 Studio: ${shotLabel(p.shots[orphan], orphan)} is linked to ${a}, `
+          + `which has no render to continue from yet.\n\n`
+          + `Widen the scope to include ${a}, or unlink the two.`);
+      return;
+    }
+
+    const links = queue.filter((i) => i > 0 && p.shots[i].link).length;
     /* Only the guide path cares about chroma: a look carry is a reference, and
        a reference carries no timing, so the -2 correspondence finding does not
-       apply to it. No prompt in carry mode. */
-    if (mode === "continue" && presetSubsampled(videoPresetName())) {
-      /* Worth stopping for: every link would hand the next clip a 4:2:0 guide,
-         and the whole chain pays for it rather than one join. */
+       apply to it. */
+    if (links && presetSubsampled(videoPresetName())) {
       const go = confirm(
         "Glide Video is set to a 4:2:0 preset.\n\n"
-        + "Chained clips are read back as guides, and a subsampled guide anchors "
-        + "the continuation less exactly \u2014 every link in the chain, not just one.\n\n"
+        + "Linked clips are read back as guides, and a subsampled guide anchors \n"
+        + "the continuation less exactly \u2014 every link, not just one.\n\n"
         + "A 4:4:4, ProRes or FFV1 preset is cleaner. Render anyway?");
       if (!go) return;
     }
 
     /* Free undo: the project as it stands goes into the same slot New and Open
        use, so Revert in the project panel brings it back. */
-    snapProject("before Render all");
+    snapProject("before Render");
     stash();
     const startIdx = p.idx;
     run = { cancel: false, force: false, waiters: [], i: queue[0], k: 0,
-            total: queue.length, skipped: p.shots.length - queue.length,
-            mode, look, note: "", made: [] };
+            total: queue.length, skipped: range.length - queue.length,
+            scope, look, links, note: "", made: [] };
     paintRun();
 
     /* Every long await in the loop goes through here, so a second Stop press has
@@ -5134,43 +5420,63 @@ function buildUI(node) {
       new Promise((_, rej) => { if (run) run.waiters.push(rej); }),
     ]);
 
-    let previous = null;
     let stopped = false;
     try {
       for (let k = 0; k < queue.length; k++) {
         const i = queue[k];
         run.i = i; run.k = k; run.note = ""; paintRun();
         switchTo(i);
+        const sh = p.shots[i];
+        const pred = i > 0 ? p.shots[i - 1] : null;
+        const from = (pred && pred.lastOut) || null;
+        const linked = !!(pred && sh.link);
 
-        if (k > 0 && mode === "continue") {
-          if (!previous) throw new Error("the previous clip produced no video to continue from");
-          run.note = "taking the tail of the previous render\u2026"; paintRun();
-          await raceCancel(adoptInto(st.cont, previous));
+        if (linked && from) {
+          run.note = "taking the tail of " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
+          await raceCancel(adoptInto(st.cont, from));
           const win = tailWindow(st.cont.dur || 0, 22);
           st.cont.start = win.start; st.cont.end = win.end;
           run.note = "doubling the tail as a seam reference\u2026"; paintRun();
-          await raceCancel(carrySeamRef(previous, win));
+          await raceCancel(carrySeamRef(from, win));
           render(); commit(); stash();
+        } else if (linked) {
+          /* Passed the pre-flight, so the slot is already filled - a project
+             from before renders were recorded. Use what is there. */
+          if (!(st.cont && st.cont.file)) {
+            throw new Error(`${shotLabel(sh, i)} is linked but ${shotLabel(pred, i - 1)} `
+                          + "has no render to continue from");
+          }
+          console.log(`[H3 Studio] Render: ${shotLabel(sh, i)} is linked but no render of `
+                    + `${shotLabel(pred, i - 1)} is recorded \u2014 keeping the CONTINUE FROM `
+                    + `already set (${st.cont.file})`);
         }
 
-        if (k > 0 && look) {
-          if (!previous) throw new Error("the previous clip produced no video to carry the look from");
-          /* Video slot 1 by convention, and cleared first: carrying into a slot
-             that already holds a hand-picked reference would silently throw it
-             away, so the slot is the mode's to own for the run. */
-          run.note = "carrying the look from the previous render\u2026"; paintRun();
-          const slot = st.slots.videos[0];
-          await raceCancel(adoptInto(slot, previous, { silent: true, reference: true }));
-          slot.carry = true;
-          run.note = "choosing the clearest window\u2026"; paintRun();
-          const got = await raceCancel(applySmartSpan(slot));
-          if (got) {
-            console.log(`[H3 Studio] Render all: carry window `
-                      + `${got.start.toFixed(2)}s..${got.end.toFixed(2)}s `
-                      + `(${got.frames}f, score ${got.score})`
-                      + (got.note ? ` \u2014 ${got.note}` : ""));
+        /* The look is for CUTS. A linked clip already has the guide at the
+           seam and the seam reference holding the subject past it; a look
+           reference from the same clip on top of those competes rather than
+           helps. Unlinked clips are where it is the only thread there is. */
+        if (!linked && look && pred) {
+          if (!from) {
+            console.log(`[H3 Studio] Render: no render of ${shotLabel(pred, i - 1)} recorded, `
+                      + `no look to carry into ${shotLabel(sh, i)}`);
+          } else {
+            /* Video slot 1 by convention, and cleared first: carrying into a
+               slot that already holds a hand-picked reference would silently
+               throw it away, so the slot is the look's to own for the run. */
+            run.note = "carrying the look from " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
+            const slot = st.slots.videos[0];
+            await raceCancel(adoptInto(slot, from, { silent: true, reference: true }));
+            slot.carry = true;
+            run.note = "choosing the clearest window\u2026"; paintRun();
+            const got = await raceCancel(applySmartSpan(slot));
+            if (got) {
+              console.log(`[H3 Studio] Render: carry window `
+                        + `${got.start.toFixed(2)}s..${got.end.toFixed(2)}s `
+                        + `(${got.frames}f, score ${got.score})`
+                        + (got.note ? ` \u2014 ${got.note}` : ""));
+            }
+            render(); commit(); stash();
           }
-          render(); commit(); stash();
         }
 
         run.note = "queued, waiting for the render\u2026"; paintRun();
@@ -5181,9 +5487,13 @@ function buildUI(node) {
           throw new Error("that render produced no video file \u2014 is Glide Video "
                         + "(or another video output) connected in the graph?");
         }
-        previous = out;
+        /* Recorded on the clip, so the next link can find it from any scope,
+           in this run or a later one. */
+        sh.lastOut = { name: out.name, subfolder: out.subfolder || "",
+                       type: out.type || "output" };
         run.made.push(out.name);
-        console.log(`[H3 Studio] Render all: clip ${i + 1} `
+        commit();
+        console.log(`[H3 Studio] Render: ${shotLabel(sh, i)} `
                   + `(${k + 1}/${queue.length}) \u2192 ${out.name}`);
 
         if (run.cancel) { stopped = true; break; }
@@ -5191,12 +5501,12 @@ function buildUI(node) {
     } catch (err) {
       stopped = true;
       if (String(err && err.message) === "cancelled") {
-        console.log("[H3 Studio] Render all: stopped");
+        console.log("[H3 Studio] Render: stopped");
       } else {
-        console.error("[H3 Studio] Render all stopped:", err);
-        /* Clips already finished stay finished, and the project holds the
-           slots the run filled, so it can be picked up from where it stopped. */
-        alert(`H3 Studio \u2014 Render all stopped at clip ${run.i + 1}:\n\n`
+        console.error("[H3 Studio] Render stopped:", err);
+        /* Clips already finished stay finished, and each one has its render
+           recorded, so the run can be picked up from where it stopped. */
+        alert(`H3 Studio \u2014 Render stopped at clip ${run.i + 1}:\n\n`
               + `${err && err.message ? err.message : err}\n\n`
               + `${run.made.length} clip${run.made.length === 1 ? "" : "s"} finished and kept.`);
       }
@@ -5209,8 +5519,8 @@ function buildUI(node) {
       if (p.shots[startIdx]) switchTo(startIdx);
       renderShots();
       if (!stopped && made.length) {
-        console.log(`[H3 Studio] Render all: done, ${made.length} clip(s), `
-                  + `final file ${made[made.length - 1]}`);
+        console.log(`[H3 Studio] Render: done, ${made.length} clip(s), `
+                  + `last file ${made[made.length - 1]}`);
       }
     }
   }
@@ -5230,6 +5540,7 @@ function buildUI(node) {
     if (!s) return;
     if (!confirm(`Delete ${shotLabel(s, i)}?`)) return;
     snapProject("before deleting " + shotLabel(s, i));
+    const before = linkPreds(p);
     p.shots.splice(i, 1);
     if (!p.shots.length) p.idx = -1;
     else if (p.idx > i) p.idx--;
@@ -5237,6 +5548,7 @@ function buildUI(node) {
       p.idx = Math.min(i, p.shots.length - 1);
       load(JSON.stringify(p.shots[p.idx].state));
     }
+    healLinks(p, before);
     commit(); paintShotsBtn(); paintPresetName(); renderShots();
   }
 
@@ -5256,11 +5568,13 @@ function buildUI(node) {
     const p = proj();
     const j = i + d;
     if (j < 0 || j >= p.shots.length) return;
+    const before = linkPreds(p);
     const [it] = p.shots.splice(i, 1);
     p.shots.splice(j, 0, it);
     if (p.idx === i) p.idx = j;
     else if (p.idx === j) p.idx = i;
     shotsFocus = j;
+    healLinks(p, before);
     commit(); paintShotsBtn(); paintPresetName(); renderShots();
   }
 
@@ -5301,7 +5615,7 @@ function buildUI(node) {
   function projectBlob() {
     const p = proj();
     return new Blob([JSON.stringify({
-      meta: { app: "H3 Studio project", version: 1, saved: new Date().toISOString() },
+      meta: { app: "H3 Studio project", version: 1, links: 1, saved: new Date().toISOString() },
       name: p.name || "", idx: p.idx, shots: p.shots,
     }, null, 1)], { type: "application/json" });
   }
@@ -5403,13 +5717,14 @@ function buildUI(node) {
     busy("packing project\u2026");
     try {
       const shots = clone(p.shots);
+      shots.forEach((s) => { delete s.lastOut; });  // a path on this machine only
       const entries = [];
       const add = makeAssetAdder(entries, new Map(), new Set());
       for (const s of shots) await packSlots(s.state.slots, add);
 
       const enc = new TextEncoder();
       entries.unshift({ name: "project.json", data: enc.encode(JSON.stringify({
-        meta: { app: "H3 Studio project", version: 1, packed: true,
+        meta: { app: "H3 Studio project", version: 1, packed: true, links: 1,
                 shots: shots.length, saved: new Date().toISOString() },
         name: p.name || "", idx: p.idx, shots,
       }, null, 1)) });
@@ -5515,8 +5830,23 @@ function buildUI(node) {
         off: !!(s && s.off),
         /* Only a palette member survives the round trip - see tlColour(). */
         colour: (s && SHOT_COLOURS.indexOf(s.colour) >= 0) ? s.colour : "",
+        link: !!(s && s.link),
+        /* Where this clip's last render went. A packed project drops it -
+           it names a file in someone else's output folder. */
+        lastOut: (s && s.lastOut && typeof s.lastOut.name === "string")
+          ? { name: s.lastOut.name,
+              subfolder: typeof s.lastOut.subfolder === "string" ? s.lastOut.subfolder : "",
+              type: typeof s.lastOut.type === "string" ? s.lastOut.type : "output" }
+          : null,
         state: parseInitial(JSON.stringify((s && s.state) || {})),
       }));
+      /* A file written before links has no link fields at all, so infer them
+         the same way an old workflow is migrated. A file that says it knows
+         about links is taken at its word, even with none set. */
+      if (!(d.meta && d.meta.links)) inferLinks(p.shots);
+      if (p.shots[0]) p.shots[0].link = false;
+      p.shots.forEach((s) => { if (!s.lastOut) delete s.lastOut; });
+      node.properties.gcast_links = 1;
       if (remap) {
         const fix = (it) => { if (it && it.file && remap.has(it.file)) it.file = remap.get(it.file); };
         p.shots.forEach((s) => {
@@ -5811,75 +6141,58 @@ function buildUI(node) {
                  bPRevert, bPNew, bPSave, bPSaveAs, bPPack, bPOpen);
     shotsPanel.append(pfoot);
 
-    /* Render all sits on its own row: it is the only control here that starts
+    /* Render sits on its own row: it is the only control here that starts
        work rather than editing the list, and it should not be a neighbour of
-       Delete. */
+       Delete.
+
+       No mode any more. Whether a clip continues from the one before it is
+       the link on the timeline; this row only says WHICH clips to render. */
     const rfoot = el("div", "gcast-shots-foot run");
-    const selMode = el("select", "gcast-runmode");
-    /* Two modes, not three: "carry look" was never a peer of "chained", it was
-       separate-plus-look all along. The link and the look are independent
-       bits, so the look is the checkbox and the dropdown only picks whether
-       there is a guide at the seam. */
-    [["continue", "chained \u2014 one continuous take"],
-     ["separate", "separate clips"]].forEach(([v, t]) => {
-      const o = el("option", null, t); o.value = v; selMode.append(o);
+    const selScope = el("select", "gcast-runmode");
+    SCOPES.forEach(([v, t]) => {
+      const o = el("option", null, t); o.value = v; selScope.append(o);
     });
-    /* The look bit is remembered per mode, because the right default is not
-       the same on both sides. Chained already has the guide holding the seam
-       frame by frame; a reference of the same clip laid on top of that
-       competes with it rather than helping, so it is off there. On separate
-       clips the reference is the only link there is, so it is on. */
-    const LOOK_KEY = { continue: "gcast_run_look_continue",
-                       separate: "gcast_run_look_separate" };
-    const LOOK_DEF = { continue: false, separate: true };
-    const keyOf = (m) => LOOK_KEY[m] || LOOK_KEY.continue;
-    const lookOf = (m) => {
-      const v = node.properties[keyOf(m)];
-      return v === undefined ? !!LOOK_DEF[m] : !!v;
-    };
-    const setLook = (m, on) => { node.properties[keyOf(m)] = !!on; };
-    /* Legacy: a project saved before the split holds "carry", which the select
-       would silently drop to its first option \u2014 a carry-look run would come
-       back chained. Map it across and write the pair back. */
-    if (node.properties.gcast_run_mode === "carry") {
-      node.properties.gcast_run_mode = "separate";
-      node.properties[LOOK_KEY.separate] = true;
-    }
-    selMode.value = node.properties.gcast_run_mode || "continue";
-    selMode.onchange = () => { node.properties.gcast_run_mode = selMode.value;
-                              paintLook(); };
-    selMode.onpointerdown = (e) => e.stopPropagation();
-    /* The look bit. Under chained it rides alongside the guide; on its own it
-       is what carry look used to be. */
+    const saved = node.properties.gcast_run_scope;
+    selScope.value = SCOPES.some(([v]) => v === saved) ? saved : "all";
+    selScope.onpointerdown = (e) => e.stopPropagation();
+
+    /* The look bit, now for cuts only - see renderAll. ON unless it has been
+       switched off: an unlinked clip is a cut, and across a cut the look
+       reference is the only thread holding the grade and the room. It does
+       take video slot 1 on those clips - the tooltip says so. */
     const labLook = el("label", "gcast-chk");
     const cbLook = el("input"); cbLook.type = "checkbox";
-    cbLook.onchange = () => setLook(selMode.value, cbLook.checked);
+    cbLook.checked = node.properties.gcast_run_look !== false;
+    cbLook.disabled = !!run;
+    cbLook.onchange = () => { node.properties.gcast_run_look = cbLook.checked; };
     labLook.append(cbLook, el("span", null, "+ look"));
     labLook.onpointerdown = (e) => e.stopPropagation();
-    const paintLook = () => {
-      cbLook.disabled = !!run;
-      cbLook.checked = lookOf(selMode.value);
-      labLook.title = selMode.value === "continue"
-        ? "Hand each clip the clearest window of the previous render as an "
-          + "ordinary video reference as well as the guide. Off by default: the "
-          + "guide already holds the seam frame by frame, and a reference of the "
-          + "same clip on top of it competes rather than helps. Uses video slot 1."
-        : "Hand each clip the clearest window of the previous render as a video "
-          + "reference \u2014 separate takes that stay in the same room. This is "
-          + "what carry look was. Uses video slot 1.";
+    labLook.title = "On every UNLINKED clip, hand it the clearest window of the "
+      + "clip before it as an ordinary video reference \u2014 separate takes that stay "
+      + "in the same room. Linked clips never get it: the guide and the seam "
+      + "reference already carry them. Uses video slot 1.";
+
+    const bRun = el("button", "gcast-btn run", "Render");
+    const paintRunTitle = () => {
+      if (!p.shots.length) { bRun.title = "Add some clips first"; return; }
+      const r = scopeRange(selScope.value, p.idx >= 0 ? p.idx : 0);
+      const q = selScope.value === "clip" ? r : r.filter((i) => !p.shots[i].off);
+      const nl = q.filter((i) => i > 0 && p.shots[i].link).length;
+      const first = shotLabel(p.shots[r[0]], r[0]);
+      const last = shotLabel(p.shots[r[r.length - 1]], r[r.length - 1]);
+      bRun.title = `${q.length} clip${q.length === 1 ? "" : "s"}: `
+        + (r.length > 1 ? `${first} \u2192 ${last}` : first)
+        + (nl ? `, ${nl} continuing through CONTINUE FROM` : "")
+        + (r.length > q.length ? `, ${r.length - q.length} skipped` : "")
+        + ". Linked clips continue from their neighbour's last render.";
     };
-    paintLook();
-    const bRun = el("button", "gcast-btn run", "Render all");
+    selScope.onchange = () => { node.properties.gcast_run_scope = selScope.value;
+                                paintRunTitle(); };
+    paintRunTitle();
     bRun.disabled = !p.shots.length || !!run;
-    bRun.title = p.shots.length
-      ? `Queue all ${p.shots.length} clips in order. Chained feeds each render `
-        + "into the next clip's CONTINUE FROM, so the last file is the whole piece. "
-        + "Separate renders each clip on its own. Either one can also carry the "
-        + "look forward \u2014 see the checkbox."
-      : "Add some clips first";
     bRun.onclick = (e) => { e.stopPropagation(); closeShots();
-                            renderAll(selMode.value, cbLook.checked); };
-    rfoot.append(el("div", "lbl", "Render"), el("div", "spacer"), selMode,
+                            renderAll(selScope.value, cbLook.checked); };
+    rfoot.append(el("div", "lbl", "Scope"), el("div", "spacer"), selScope,
                  labLook, bRun);
     shotsPanel.append(rfoot);
   }
@@ -6300,9 +6613,20 @@ function buildUI(node) {
 
   bMatch.onclick = () => { st.ref_image_size = "match"; render(); commit(); };
   bMax.onclick = () => { st.ref_image_size = "max"; render(); commit(); };
+  selRefine.onchange = (v) => {
+    if (v === "custom") {
+      refineCustom = true;
+      render();
+      inRefine.focus(); inRefine.select();
+      return;
+    }
+    refineCustom = false;
+    st.ref_refine_scale = +v;
+    render(); commit();
+  };
   inRefine.onchange = () => {
     const v = Number(inRefine.value);
-    st.ref_refine_scale = Number.isFinite(v) ? Math.min(4, Math.max(1, v)) : 1;
+    st.ref_refine_scale = Number.isFinite(v) ? Math.min(4, Math.max(1, Math.round(v * 100) / 100)) : 1;
     render(); commit();
   };
 

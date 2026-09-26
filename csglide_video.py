@@ -342,11 +342,9 @@ class CSGlideVideo:
                 }),
                 "save_metadata": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Embed the prompt and workflow in the file's "
-                               "comment field. Readable with exiftool or VLC. "
-                               "Drag-and-drop restore into ComfyUI is reliable "
-                               "for MKV, hit-or-miss for MP4 depending on "
-                               "frontend version.",
+                    "tooltip": "Embed the prompt and workflow in the file. In mp4/mov "
+                               "you can drop the video on the ComfyUI canvas to "
+                               "reopen its workflow; also readable with exiftool or VLC.",
                 }),
                 "fallback_on_failure": ("BOOLEAN", {
                     "default": True,
@@ -443,6 +441,15 @@ class CSGlideVideo:
                 "comment": json.dumps(payload, separators=(",", ":")),
                 "encoder": "Glide Video",
             }
+            # ComfyUI's own tags, one per key, each holding its JSON - what
+            # the native Save Video writes, and what the frontend looks for
+            # when a video is dropped on the canvas to reopen its workflow.
+            # The combined "comment" above stays for exiftool, VLC and
+            # VideoHelperSuite-style readers; it cannot open a workflow.
+            for key, value in payload.items():
+                if key in meta_fields or key == self.CHAIN_TAG:
+                    continue
+                meta_fields[key] = json.dumps(value, separators=(",", ":"))
             write_ffmetadata(meta_path, meta_fields)
 
         deep_cache = {}
