@@ -361,6 +361,31 @@ async def _route_preview(request):
         _PREVIEW_LOCK.release()
 
 
+# ------------------------------------------------------------------- naming
+
+def _rename_like_source(rendered: Path, source: Path, suffix: str) -> str:
+    """Give the rendered file the source video's name plus a suffix, in the
+    folder the engine wrote it to. Never overwrites: an existing name gets
+    _2, _3... If anything goes wrong the engine's own name is kept."""
+    try:
+        if not rendered.is_file():
+            return str(rendered)
+        tag = "".join(c for c in (suffix or "").strip() if c not in '<>:"/\\|?*')
+        stem = source.stem + (("_" + tag) if tag else "")
+        target = rendered.with_name(stem + rendered.suffix)
+        if target == rendered:
+            return str(rendered)
+        n = 2
+        while target.exists():
+            target = rendered.with_name(f"{stem}_{n}{rendered.suffix}")
+            n += 1
+        os.replace(rendered, target)
+        return str(target)
+    except Exception as error:
+        print(f"[Glide DLSS5] kept the engine's file name, rename failed: {error}")
+        return str(rendered)
+
+
 # ------------------------------------------------------------------- node
 
 class CSGlideDLSS5:
@@ -380,6 +405,9 @@ class CSGlideDLSS5:
             },
             "optional": {
                 "output_directory": ("STRING", {"default": "", "tooltip": "Empty = ComfyUI output folder."}),
+                "name_from_source": ("BOOLEAN", {"default": True,
+                                     "tooltip": "On: the output keeps the source video's name, with filename_prefix added as a suffix "
+                                                "(01_shot_00001.mp4 -> 01_shot_00001_DLSS5.mkv). Off: prefix + timestamp, as before."}),
             },
         }
 
@@ -398,7 +426,7 @@ class CSGlideDLSS5:
             return float("nan")
 
     def render(self, settings, video, codec, container, quality, filename_prefix,
-               copy_audio, preview_frames, output_directory=""):
+               copy_audio, preview_frames, output_directory="", name_from_source=True):
         source = _resolve_source(video)
         node = _Engine.mod("nodes.enhance_video").DLSS5EnhanceVideoFile
         out = node.execute(
@@ -409,8 +437,142 @@ class CSGlideDLSS5:
         )
         values = getattr(out, "result", None) or getattr(out, "args", None) or out
         path, frames = values[0], int(values[1])
+        if name_from_source:
+            path = _rename_like_source(Path(str(path)), source, filename_prefix)
         return {"ui": {"glide_dlss5_done": [{"path": str(path), "frames": frames}]},
                 "result": (str(path), frames)}
+
+
+# ------------------------------------------------------------- batch node
+
+def _resolve_folder(value: str) -> Path:
+    """A folder inside ComfyUI's input, output or temp folder - the same
+    confinement as a single video. Relative names live in the output folder,
+    where renders are (so "Static" means output/Static)."""
+    raw = str(value or "").strip().strip('"').strip("'")
+    if not raw:
+        raise ValueError("Type the folder that holds your clips, e.g. Static "
+                         "(inside ComfyUI's output folder) or its full path.")
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path(folder_paths.get_output_directory()) / raw
+    candidate = candidate.resolve()
+    if not any(candidate.is_relative_to(root) for root in _allowed_roots()):
+        raise ValueError("Glide DLSS5 Batch only reads folders inside ComfyUI's "
+                         "input, output or temp folders.")
+    if not candidate.is_dir():
+        raise FileNotFoundError(f"No folder at {candidate}")
+    return candidate
+
+
+def _is_our_output(stem: str, tag: str) -> bool:
+    """True for a file this node already wrote: <name>_<tag> or <name>_<tag>_N.
+    Keeps a batch from upscaling its own results when they share a folder."""
+    if not tag:
+        return False
+    if stem.endswith("_" + tag):
+        return True
+    head, _, tail = stem.rpartition("_")
+    return tail.isdigit() and head.endswith("_" + tag)
+
+
+class CSGlideDLSS5Batch:
+    """Every video in one folder through DLSS5, one after another, each saved
+    under its own name with the suffix: 01_1_the-wake_00001.mp4 ->
+    01_1_the-wake_00001_DLSS5.mkv. Files are taken in name order."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "settings": ("DLSS5_SETTINGS", {"tooltip": "Connect a DLSS5 Settings node."}),
+                "folder": ("STRING", {"default": "",
+                           "tooltip": "Folder with your clips. A name like Static means output/Static; "
+                                      "a full path works if it is inside ComfyUI's input, output or temp folder."}),
+                "codec": (_choices("CODECS", ["HEVC", "H.264", "AV1", "ProRes Proxy"]), {"default": "HEVC"}),
+                "container": (_choices("CONTAINERS", ["MKV", "MP4", "MOV"]), {"default": "MKV"}),
+                "quality": (_choices("QUALITIES", ["Auto", "Good", "Best", "Max"]), {"default": "Auto"}),
+                "suffix": ("STRING", {"default": "DLSS5", "tooltip": "Added to each file name: clip.mp4 -> clip_DLSS5.mkv"}),
+                "copy_audio": ("BOOLEAN", {"default": True}),
+                "skip_done": ("BOOLEAN", {"default": True,
+                              "tooltip": "Skip clips that already have a result with this suffix in the output folder, "
+                                         "so a stopped batch picks up where it left off."}),
+            },
+            "optional": {
+                "output_directory": ("STRING", {"default": "",
+                                     "tooltip": "Empty = a DLSS5 folder inside the clips folder (e.g. output/Static/DLSS5)."}),
+                "name_filter": ("STRING", {"default": "",
+                                "tooltip": "Only files whose name contains this text. Empty = every video in the folder."}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "INT")
+    RETURN_NAMES = ("video_paths", "count")
+    FUNCTION = "render_all"
+    CATEGORY = "CGlide"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")  # always look at the folder again
+
+    def render_all(self, settings, folder, codec, container, quality, suffix,
+                   copy_audio, skip_done, output_directory="", name_filter=""):
+        import comfy.model_management as mm
+        import comfy.utils
+
+        src_dir = _resolve_folder(folder)
+        tag = "".join(c for c in (suffix or "").strip() if c not in '<>:"/\\|?*')
+        out_dir = Path(output_directory.strip().strip('"')) if (output_directory or "").strip() \
+            else src_dir / "DLSS5"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ext = "." + str(container).lower()
+
+        needle = (name_filter or "").strip().lower()
+        clips = sorted(
+            f for f in src_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in VIDEO_EXTS
+            and not _is_our_output(f.stem, tag)
+            and (not needle or needle in f.name.lower())
+        )
+        if not clips:
+            raise ValueError(f"No videos to render in {src_dir}.")
+
+        node = _Engine.mod("nodes.enhance_video").DLSS5EnhanceVideoFile
+        bar = comfy.utils.ProgressBar(len(clips))
+        done, skipped, failed = [], [], []
+
+        for i, clip in enumerate(clips, 1):
+            mm.throw_exception_if_processing_interrupted()
+            final = out_dir / (clip.stem + (("_" + tag) if tag else "") + ext)
+            if skip_done and final.exists():
+                print(f"[Glide DLSS5 Batch] {i}/{len(clips)} skip, already done: {final.name}")
+                skipped.append(str(final)); bar.update(1)
+                continue
+            print(f"[Glide DLSS5 Batch] {i}/{len(clips)} {clip.name}")
+            try:
+                out = node.execute(
+                    video_path=str(clip), settings=settings, codec=codec, container=container,
+                    quality=quality, filename_prefix="GlideDLSS5batch",
+                    output_directory=str(out_dir), max_frames=0,
+                    copy_audio=bool(copy_audio), verify_neural_rendering=True,
+                )
+                values = getattr(out, "result", None) or getattr(out, "args", None) or out
+                done.append(_rename_like_source(Path(str(values[0])), clip, tag))
+            except mm.InterruptProcessingException:
+                raise
+            except Exception as error:
+                print(f"[Glide DLSS5 Batch] FAILED {clip.name}: {error}")
+                failed.append(clip.name)
+            bar.update(1)
+
+        print(f"[Glide DLSS5 Batch] finished: {len(done)} rendered, {len(skipped)} skipped, "
+              f"{len(failed)} failed -> {out_dir}")
+        if failed:
+            print("[Glide DLSS5 Batch] failed: " + ", ".join(failed))
+        paths = done + skipped
+        return {"ui": {"text": [f"{len(done)} rendered, {len(skipped)} skipped, {len(failed)} failed -> {out_dir}"]},
+                "result": ("\n".join(paths), len(done))}
 
 
 class CSGlideDLSS5Legacy(CSGlideDLSS5):
@@ -421,9 +583,11 @@ class CSGlideDLSS5Legacy(CSGlideDLSS5):
 
 NODE_CLASS_MAPPINGS = {
     "CSGlideDLSS5CS": CSGlideDLSS5,
+    "CSGlideDLSS5BatchCS": CSGlideDLSS5Batch,
     "CSGlideDLSS5": CSGlideDLSS5Legacy,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CSGlideDLSS5CS": "Glide DLSS5",
+    "CSGlideDLSS5BatchCS": "Glide DLSS5 Batch",
     "CSGlideDLSS5": "Glide DLSS5 (old)",
 }

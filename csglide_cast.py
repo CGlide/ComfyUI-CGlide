@@ -669,20 +669,26 @@ CARRY_NOTE = ("@video%d gives the state of the scene at this point in the film: 
               "Do not follow its camera movement or its action.")
 
 
-def inject_carry_note(cfg):
+def inject_carry_note(cfg, tags=None):
     """Prepend the job line for any slot the batch mode filled as a look carry.
 
     Injected as an @token so the normal tag machinery renumbers it against the
     filled slots - writing <Video k> here would go stale the moment a slot above
     it emptied. A slot already mentioned by hand is left alone: the prompt wins
-    over the mode.
+    over the mode. "By hand" covers both forms - the @video token, and the raw
+    <Video k> tag the slot is emitted as (official-guide prompts write those
+    directly, and transcription passes them through untouched).
     """
     prompt = cfg["prompt"]
+    tags = tags or {}
     lines = []
     for n, slot in enumerate(cfg["videos"], start=1):
         if slot is None or not slot.get("carry"):
             continue
-        if ("@video%d" % n) in prompt:
+        if re.search(r"@video%d(?![0-9A-Za-z])" % n, prompt):
+            continue
+        real = tags.get("@video%d" % n)
+        if real and real in prompt:
             continue
         lines.append(CARRY_NOTE % n)
     if not lines:
@@ -1275,7 +1281,7 @@ class CSGlideCast:
                  + [f"@videoaudio{i}" for i in range(1, MAX_VIDEOS + 1)]
                  + [f"@audio{i}" for i in range(1, MAX_AUDIOS + 1)])
         tags, presentation = build_tag_map(cfg, False, False)
-        prompt = transcribe_prompt(inject_carry_note(cfg), tags, known)
+        prompt = transcribe_prompt(inject_carry_note(cfg, tags), tags, known)
 
         ref_items, ref_blocks = self._refs(cfg, vae, audio_vae, width, height, frame_count)
         if presentation:

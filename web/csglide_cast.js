@@ -292,6 +292,30 @@ function presentation(st) {
   return { rows, tags };
 }
 
+/* Raw tags typed straight into the prompt, the way the official MiniMax guide
+ * writes them. Python only transcribes @tokens, so these reach the encoder
+ * untouched and name whatever the tokenizer numbered: filled slots only, in
+ * type order. Matched loosely so a near-miss can be SHOWN -- but only the exact
+ * <Picture N> / <Video N> / <Audio N> form counts, since that is the only form
+ * the tokenizer is known to read (<picture0> arrives as plain prose). */
+const RAW_TAG_RE = /<\s*(picture|video|audio)\s*(\d+)\s*>/gi;
+function rawTagCanon(kind, n) {
+  return `<${kind[0].toUpperCase()}${kind.slice(1).toLowerCase()} ${+n}>`;
+}
+/* exact: canonical tags present in the prompt. malformed: loose forms that
+ * will not be read as tags at all. */
+function rawTagsIn(prompt) {
+  const exact = new Set(), malformed = [];
+  let m;
+  RAW_TAG_RE.lastIndex = 0;
+  while ((m = RAW_TAG_RE.exec(prompt || "")) !== null) {
+    const canon = rawTagCanon(m[1], m[2]);
+    if (m[0] === canon && +m[2] >= 1) exact.add(canon);
+    else if (!malformed.includes(m[0])) malformed.push(m[0]);
+  }
+  return { exact, malformed };
+}
+
 /* ---- prompt check ---------------------------------------------------
  * H3 always generates a soundtrack for the full duration, so whatever the
  * prompt leaves unsaid gets invented -- which is where mumbling comes from.
@@ -3408,10 +3432,13 @@ function buildUI(node) {
   const hlEsc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   /* one pass, two things worth seeing: the @tags, and the [Shot N] markers
    * in the same colour their band has on the timeline just above. */
-  const HL_RE = /(\[\s*Shot\s*\d+\s*\](?:\s*At\s+[0-9:.]+\s*s?\s*,?)?)|(@[A-Za-z][A-Za-z0-9]*)/g;
+  /* third group: raw <Picture N> / <Video N> / <Audio N> tags, coloured like
+   * an @tag when they land on a filled slot, amber when they don't */
+  const HL_RE = /(\[\s*Shot\s*\d+\s*\](?:\s*At\s+[0-9:.]+\s*s?\s*,?)?)|(@[A-Za-z][A-Za-z0-9]*)|(<\s*(?:picture|video|audio)\s*\d+\s*>)/gi;
 
   function hlMarkup(text) {
     let out = "", last = 0, shot = 0, m;
+    const live = new Set(Object.values(presentation(st).tags));
     HL_RE.lastIndex = 0;
     while ((m = HL_RE.exec(text)) !== null) {
       out += hlEsc(text.slice(last, m.index));
@@ -3419,6 +3446,11 @@ function buildUI(node) {
         const c = SHOT_COLOURS[shot % SHOT_COLOURS.length];
         shot++;
         out += '<span class="shot" style="color:' + c + '">' + hlEsc(m[1]) + "</span>";
+      } else if (m[3]) {
+        /* exact form AND pointing at a filled slot, or it is worth seeing */
+        const raw = m[3], canon = rawTagCanon(raw.replace(/[<>\s\d]/g, ""), raw.replace(/\D/g, ""));
+        out += '<span class="' + (raw === canon && live.has(canon) ? "tok" : "bad") + '">'
+             + hlEsc(raw) + "</span>";
       } else {
         /* a tag that names no slot is a typo you want to see NOW, not after
          * a render comes back with the reference missing */
@@ -3647,6 +3679,9 @@ function buildUI(node) {
 
   function renderTags() {
     const { rows, tags } = presentation(st);
+    const raw = rawTagsIn(st.prompt);
+    /* a slot is mentioned by its @token OR by the raw tag it is emitted as */
+    const mentioned = (token, tag) => hasToken(token) || (!!tag && raw.exact.has(tag));
 
     /* Rebuild the chips ONLY when the reference set changes. Typing calls
      * this on every keystroke, and recreating a <video> thumbnail makes it
@@ -3680,7 +3715,7 @@ function buildUI(node) {
     }
     /* the in-the-prompt state changes as you type, so only that is repainted */
     chipEls.forEach((b, token) => {
-      const on = hasToken(token);
+      const on = mentioned(token, b.dataset.tag);
       b.classList.toggle("on", on);
       b.title = on
         ? `${token} → ${b.dataset.tag} · in the prompt`
@@ -3696,7 +3731,7 @@ function buildUI(node) {
       rows.forEach((r) => {
         const item = el("span");
         const tok = r.token || (r.from === "first frame" ? "@first" : r.from === "last frame" ? "@last" : null);
-        const used = hasToken(tok);
+        const used = mentioned(tok, r.tag);
         if (!used) silent++;
         item.innerHTML = `<b>${r.tag.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</b> <span class="arrow">←</span> ${r.from}`;
         if (!used) item.classList.add("gcast-warn");
@@ -3708,6 +3743,17 @@ function buildUI(node) {
     if (orphans.length) {
       pres.append(el("span", "gcast-warn", `· ${orphans.join(" ")} points at an empty slot`));
       pres.append(el("span", "arrow", "then the prompt"));
+    }
+    /* raw tags past the filled slots: the encoder gets a label with nothing
+     * behind it, or -- worse -- the slot you meant was renumbered */
+    const live = new Set(Object.values(tags));
+    const stray = [...raw.exact].filter((t) => !live.has(t));
+    if (stray.length) {
+      pres.append(el("span", "gcast-warn", `· ${stray.join(" ")} points past the filled slots`));
+    }
+    if (raw.malformed.length) {
+      pres.append(el("span", "gcast-warn",
+        `· ${raw.malformed.join(" ")} is not read as a tag \u2014 write <Picture 1> / <Video 1> / <Audio 1>`));
     }
   }
 
@@ -3730,6 +3776,11 @@ function buildUI(node) {
   let fileHandle = null;      // File System Access handle, when supported
   let fileIsPack = false;
   let fileLabel = "";
+  /* The project file, declared up here with the clip file: paintPresetName
+     runs from render(), which can happen before the project code further
+     down has been reached. */
+  let projHandle = null;
+  let projLabel = "";
 
   /* -- minimal zip, stored (media is already compressed) -- */
   const CRC_TABLE = (() => {
@@ -4129,8 +4180,15 @@ function buildUI(node) {
       const pn = (p.name || "").trim();
       if (pn) shot += ` <span class="sep">\u00b7</span><span class="projname">${esc(pn)}</span>`;
     }
-    nameLabel.innerHTML = (fileLabel
-      ? `${badge} ${fileLabel}`
+    /* Save writes the PROJECT file when the project has more than one clip
+       (same test as the Save button), so the bar names that file. It used to
+       read fileLabel - the single-clip file - which a project save never
+       sets, so a saved project always read "unsaved". The name is also kept
+       in the project itself, so it survives reopening the workflow. */
+    const many = !!(p && Array.isArray(p.shots) && p.shots.length > 1);
+    const label = many ? (projLabel || (p && p.file) || "") : fileLabel;
+    nameLabel.innerHTML = (label
+      ? `${badge} ${esc(label)}`
       : `${badge} <span class="dirty">unsaved</span>`) + shot;
     /* Repaint the Project button from the same place. It used to be painted
        only by the actions that CHANGE the project, so a workflow reloaded with
@@ -4164,8 +4222,6 @@ function buildUI(node) {
 
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const uid = () => Math.random().toString(36).slice(2, 9);
-  let projHandle = null;
-  let projLabel = "";
   let shotsOpen = false;
   let shotsFocus = -1;
 
@@ -5678,7 +5734,7 @@ function buildUI(node) {
        * which is the useful reading whenever nothing destructive has
        * happened since - and if something has, that action took its own
        * snapshot and this one is already gone. */
-      if (wrote) snapProject("as last saved");
+      if (wrote) { p.file = projLabel; commit(); snapProject("as last saved"); }
       renderShots();
     } catch (e) {
       alert("H3 Studio: could not save the project \u2014 " + e);
@@ -5861,6 +5917,7 @@ function buildUI(node) {
       /* a pack is an import, not a working file - don't let Save write over it */
       projHandle = isPack ? null : (picked.handle || null);
       projLabel = picked.file.name;
+      p.file = isPack ? "" : projLabel;
       if (p.idx >= 0) load(JSON.stringify(p.shots[p.idx].state));
       commit(); paintShotsBtn(); paintPresetName(); renderShots();
     } catch (e) {
