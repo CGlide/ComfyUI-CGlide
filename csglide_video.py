@@ -69,8 +69,55 @@ def _temp_dir():
     return tempfile.gettempdir()
 
 
+_DATE_TOKENS = re.compile(r"yyyy|yy|MM|M|dd|d|hh|h|mm|m|ss|s")
+_DATE_PLACEHOLDERS = re.compile(r"%date:([^%]+)%")
+
+def _expand_filename_prefix(prefix):
+    """Expand ComfyUI-style date placeholders in output paths."""
+    now = datetime.now()
+
+    values = {
+        "yyyy": f"{now.year:04d}",
+        "yy": f"{now.year % 100:02d}",
+        "MM": f"{now.month:02d}",
+        "M": str(now.month),
+        "dd": f"{now.day:02d}",
+        "d": str(now.day),
+        "hh": f"{now.hour:02d}",
+        "h": str(now.hour),
+        "mm": f"{now.minute:02d}",
+        "m": str(now.minute),
+        "ss": f"{now.second:02d}",
+        "s": str(now.second),
+    }
+
+    def replace_date(match):
+        pattern = match.group(1)
+        return _DATE_TOKENS.sub(
+            lambda token: values[token.group(0)],
+            pattern,
+        )
+
+    prefix = _DATE_PLACEHOLDERS.sub(replace_date, prefix)
+
+    # Also support ComfyUI's simple backend placeholders.
+    simple = {
+        "year": values["yyyy"],
+        "month": values["MM"],
+        "day": values["dd"],
+        "hour": values["hh"],
+        "minute": values["mm"],
+        "second": values["ss"],
+    }
+    for name, value in simple.items():
+        prefix = prefix.replace(f"%{name}%", value)
+
+    return prefix
+
 def _next_path(directory, prefix, ext):
     """ComfyUI-style incrementing filename: prefix_00001.ext"""
+    prefix = _expand_filename_prefix(prefix)
+    
     subdir = os.path.dirname(prefix)
     base = os.path.basename(prefix) or "glide"
     target = os.path.join(directory, subdir) if subdir else directory
@@ -333,7 +380,10 @@ class CSGlideVideo:
                 "filename_prefix": ("STRING", {
                     "default": "glide/GlideVideo",
                     "tooltip": "Path under the output folder. A slash makes a "
-                               "subfolder. A counter is appended automatically.",
+                               "subfolder. A counter is appended automatically."
+                               "Supports date placeholders such as "
+                               "%date:yyyy-MM-dd% and %date:hh-mm-ss%, "
+                               "plus %year%, %month%, and %day%. ",
                 }),
                 "save_output": ("BOOLEAN", {
                     "default": True,
