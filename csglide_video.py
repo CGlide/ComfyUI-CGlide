@@ -15,9 +15,11 @@ Drop this next to csglide_video_presets.py and register it in __init__.py.
 import collections
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
+from datetime import datetime
 
 import numpy as np
 
@@ -69,11 +71,77 @@ def _temp_dir():
     return tempfile.gettempdir()
 
 
+# Date placeholders in filename_prefix, VideoHelperSuite / ComfyUI style.
+# Contributed by Muxelmann (PR #32). Every placeholder expands to digits only,
+# so it can never put a ".." or a slash into the path by itself.
+_DATE_TOKENS = re.compile(r"yyyy|yy|MM|M|dd|d|hh|h|mm|m|ss|s")
+_DATE_PLACEHOLDERS = re.compile(r"%date:([^%]+)%")
+
+
+def _expand_filename_prefix(prefix):
+    """Expand %date:yyyy-MM-dd% style placeholders, plus %year% .. %second%."""
+    now = datetime.now()
+    values = {
+        "yyyy": "%04d" % now.year,
+        "yy": "%02d" % (now.year % 100),
+        "MM": "%02d" % now.month,
+        "M": str(now.month),
+        "dd": "%02d" % now.day,
+        "d": str(now.day),
+        "hh": "%02d" % now.hour,
+        "h": str(now.hour),
+        "mm": "%02d" % now.minute,
+        "m": str(now.minute),
+        "ss": "%02d" % now.second,
+        "s": str(now.second),
+    }
+
+    def replace_date(match):
+        return _DATE_TOKENS.sub(lambda t: values[t.group(0)], match.group(1))
+
+    prefix = _DATE_PLACEHOLDERS.sub(replace_date, prefix)
+
+    simple = {
+        "year": values["yyyy"], "month": values["MM"], "day": values["dd"],
+        "hour": values["hh"], "minute": values["mm"], "second": values["ss"],
+    }
+    for name, value in simple.items():
+        prefix = prefix.replace("%" + name + "%", value)
+    return prefix
+
+
+def _inside(root, target):
+    """True when target is root or sits somewhere under it.
+
+    realpath on both sides, so "..", symlinks and junctions are resolved
+    before comparing. normcase because Windows paths compare case-blind.
+    commonpath raises on two different drives -- that is outside too.
+    """
+    root = os.path.normcase(os.path.realpath(root))
+    target = os.path.normcase(os.path.realpath(target))
+    try:
+        return os.path.commonpath([root, target]) == root
+    except ValueError:
+        return False
+
+
 def _next_path(directory, prefix, ext):
-    """ComfyUI-style incrementing filename: prefix_00001.ext"""
+    """ComfyUI-style incrementing filename: prefix_00001.ext
+
+    The prefix comes from a widget, so it is checked: the folder it names
+    must stay inside the output (or temp) folder. Without this, a prefix
+    like "../../somewhere" or an absolute "C:/somewhere" would write -- and
+    create folders -- anywhere on the disk.
+    """
+    prefix = _expand_filename_prefix(str(prefix or ""))
     subdir = os.path.dirname(prefix)
     base = os.path.basename(prefix) or "glide"
     target = os.path.join(directory, subdir) if subdir else directory
+    if not _inside(directory, target):
+        raise ValueError(
+            "Glide Video: filename_prefix '%s' points outside the output "
+            "folder. Use a relative path like 'glide/MyClip' -- a slash makes "
+            "a subfolder, '..' and absolute paths are refused." % prefix)
     os.makedirs(target, exist_ok=True)
 
     n = 1
@@ -333,7 +401,11 @@ class CSGlideVideo:
                 "filename_prefix": ("STRING", {
                     "default": "glide/GlideVideo",
                     "tooltip": "Path under the output folder. A slash makes a "
-                               "subfolder. A counter is appended automatically.",
+                               "subfolder. A counter is appended automatically. "
+                               "Date placeholders work: %date:yyyy-MM-dd%, "
+                               "%date:hh-mm-ss%, %year%, %month%, %day%. "
+                               "Keep other text outside the %date:...% part "
+                               "-- letters like s, h, m, d inside it become numbers.",
                 }),
                 "save_output": ("BOOLEAN", {
                     "default": True,
