@@ -9,6 +9,9 @@ from .csglide_dlss5 import CSGlideDLSS5, CSGlideDLSS5Batch, CSGlideDLSS5Legacy
 # Routes only, no node class: importing it registers /cglide/recent_outputs and
 # /cglide/adopt_output on ComfyUI's server. Nothing to add to the mappings below.
 from . import csglide_adopt  # noqa: F401
+# Routes only as well: /cglide/render_job, the server-side Render all that keeps
+# a chain of clips going after the browser tab is closed.
+from . import csglide_render  # noqa: F401
 
 NODE_CLASS_MAPPINGS = {
     "CSGlideVisionCS": CSGlideVision,

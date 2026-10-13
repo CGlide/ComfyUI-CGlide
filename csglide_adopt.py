@@ -375,6 +375,47 @@ async def _probe_file(request: web.Request) -> web.Response:
     return web.json_response(info)
 
 
+def adopt_file(filename: str, subfolder: str = "", kind: str = "output") -> dict | None:
+    """Copy one output file into input/<ASSET_SUBFOLDER>/ and describe the copy.
+
+    Blocking (a disk copy and a probe), so callers on the event loop run it in
+    an executor. Shared by the adopt route and by the server-side Render all in
+    csglide_render, which has to do the same hop with no browser attached.
+    Returns None when the file cannot be found.
+    """
+    filename = str(filename or "")
+    if not filename:
+        return None
+    root = _root_for(kind or "output")
+    src = _resolve_inside(root, str(subfolder or ""), filename)
+    if not src or not os.path.isfile(src):
+        # Not where we were told. Look for it by name before giving up -- see
+        # _find_by_name for why the reported folder can be wrong.
+        src = _find_by_name(root, filename)
+        if not src:
+            return None
+
+    dest_dir = os.path.join(folder_paths.get_input_directory(), ASSET_SUBFOLDER)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = _unique_path(dest_dir, os.path.basename(src))
+    # copy2, not copy: a 12s 4:4:4 render is big enough that doing it on the
+    # event loop would stall every other request for the duration.
+    shutil.copy2(src, dest)
+    info = _probe(dest)
+
+    print(f"[H3 Studio] adopted {os.path.basename(src)} "
+          f"-> input/{ASSET_SUBFOLDER}/{os.path.basename(dest)}"
+          + (f"  ({info['codec']} {info['chroma']})" if info["codec"] else ""))
+    return {
+        "name": os.path.basename(dest),
+        "subfolder": ASSET_SUBFOLDER,
+        "duration": info["duration"],
+        "codec": info["codec"],
+        "pix_fmt": info["pix_fmt"],
+        "chroma": info["chroma"],
+    }
+
+
 @PromptServer.instance.routes.post("/cglide/adopt_output")
 async def _adopt_output(request: web.Request) -> web.Response:
     """Copy one output file into input/<ASSET_SUBFOLDER>/ and report its name."""
@@ -383,45 +424,17 @@ async def _adopt_output(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "body is not JSON"}, status=400)
 
-    filename = str(data.get("filename") or "")
-    subfolder = str(data.get("subfolder") or "")
-    if not filename:
+    if not str(data.get("filename") or ""):
         return web.json_response({"error": "filename is required"}, status=400)
 
-    root = _root_for(data.get("type", "output"))
-    src = _resolve_inside(root, subfolder, filename)
-    if not src or not os.path.isfile(src):
-        # Not where we were told. Look for it by name before giving up -- see
-        # _find_by_name for why the reported folder can be wrong.
-        found = await asyncio.get_running_loop().run_in_executor(
-            None, _find_by_name, root, filename)
-        if found:
-            src = found
-        else:
-            # Same answer for "outside the root" and "not there": a probe should
-            # not learn which paths exist from the status code.
-            return web.json_response({"error": "file not found"}, status=404)
-
-    dest_dir = os.path.join(folder_paths.get_input_directory(), ASSET_SUBFOLDER)
     try:
-        os.makedirs(dest_dir, exist_ok=True)
-        dest = _unique_path(dest_dir, os.path.basename(src))
-        loop = asyncio.get_running_loop()
-        # copy2, not copy: a 12s 4:4:4 render is big enough that doing it on the
-        # event loop would stall every other request for the duration.
-        await loop.run_in_executor(None, shutil.copy2, src, dest)
-        info = await loop.run_in_executor(None, _probe, dest)
+        got = await asyncio.get_running_loop().run_in_executor(
+            None, adopt_file, data.get("filename"), data.get("subfolder"),
+            data.get("type", "output"))
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
-
-    print(f"[H3 Studio] adopted {os.path.basename(src)} "
-          f"-> input/{ASSET_SUBFOLDER}/{os.path.basename(dest)}"
-          + (f"  ({info['codec']} {info['chroma']})" if info["codec"] else ""))
-    return web.json_response({
-        "name": os.path.basename(dest),
-        "subfolder": ASSET_SUBFOLDER,
-        "duration": info["duration"],
-        "codec": info["codec"],
-        "pix_fmt": info["pix_fmt"],
-        "chroma": info["chroma"],
-    })
+    if got is None:
+        # Same answer for "outside the root" and "not there": a probe should
+        # not learn which paths exist from the status code.
+        return web.json_response({"error": "file not found"}, status=404)
+    return web.json_response(got)
