@@ -5214,14 +5214,17 @@ function buildUI(node) {
    * Glide Join stitches as it goes and the LAST render is the finished piece
    * -- there is no separate assembly pass to build.
    *
-   * The loop drives the panel rather than the graph: it switches clips, fills
-   * the slot, commits, queues, waits. Everything it does is something you
-   * could do by hand, which is what makes it safe to interrupt.
+   * The chain runs on the SERVER (csglide_render.py). The panel checks the
+   * run, sends the graph and every clip in the range in one request, and from
+   * then on only watches: closing the tab no longer stops the project after
+   * the clip on the sampler. Reopening the workflow picks the job up again
+   * and writes each finished render back into its clip, the same way the old
+   * in-browser loop did as it went.
    */
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const VIDEO_OUT_RE = /\.(mkv|mp4|m4v|mov|webm|avi|mpg|mpeg|ts|m2ts|wmv|flv|ogv)$/i;
-  let run = null;                 /* null when idle; the run's own state when not */
+  let run = null;                 /* null when idle; the watched job's state when not */
   let runBox = null;              /* the overlay, so it can be torn down */
+  let dead = false;               /* the node was removed: stop watching, keep the job */
 
   /* Only 4:2:0 hurts: measured on the same pair, an AV1 yuv420p10le guide made
      Glide Join report a frame correction every time, while 4:2:2 and 4:4:4
@@ -5238,79 +5241,35 @@ function buildUI(node) {
     } catch (e) { return ""; }
   }
 
-  async function queueOnce() {
-    const p = await app.graphToPrompt();
-    const res = await api.queuePrompt(0, p);
-    const id = res && (res.prompt_id || res.promptId);
-    if (!id) throw new Error("the server accepted no prompt id");
-    return id;
+  /* The job id lives on the node, so it is saved with the workflow and a tab
+     opened later can find the run again. Nudging the change tracker is what
+     gets it into the autosaved copy now rather than at the next click. */
+  function persistWorkflow() {
+    try { app.extensionManager?.workflow?.activeWorkflow?.changeTracker?.checkState?.(); }
+    catch (e) { /* older frontends autosave on their own schedule */ }
   }
 
-  /* Polling rather than socket events: it survives a dropped websocket, a tab
-     that was backgrounded, and every frontend version. A render is a minute or
-     more, so a second between checks costs nothing. */
-  async function waitForPrompt(id) {
-    for (;;) {
-      if (run && run.cancel) throw new Error("cancelled");
-      await sleep(1200);
-      let entry = null;
-      try {
-        const r = await api.fetchApi(`/history/${id}`);
-        if (r.status === 200) {
-          const h = await r.json();
-          entry = h && h[id];
-        }
-      } catch (e) { /* server busy or restarting: try again */ }
-      if (!entry) continue;
-      const s = entry.status || {};
-      if (s.status_str === "error") throw new Error("the render failed - see the console");
-      if (s.completed || s.status_str === "success") return entry;
-    }
+  /* Which entry of the API prompt is THIS node. Matched on the h3_data it
+     carries, because a node inside a subgraph is renamed on the way out
+     ("12:5") and its graph id no longer says where it went. */
+  function castPromptId(output, value) {
+    const ids = Object.keys(output || {}).filter((k) => output[k]?.class_type === NODE_ID);
+    const mine = ids.filter((k) => output[k].inputs?.h3_data === value);
+    if (mine.length === 1) return mine[0];
+    if (ids.length === 1) return ids[0];
+    return null;
   }
 
-  /* Glide Video reports ONE entry per render: the browser-playable proxy, as
-     type "temp", with the real file named in a "master" field beside it. So the
-     master never appears as a filename anywhere in the history, and picking
-     "the newest video" can only ever find the proxy. Read master when it is
-     offered; fall back to filename for anything else that writes video. */
-  const PREVIEW_RE = /(^|[._-])preview\.[^.]+$/i;
-
-  function videoFromHistory(entry) {
-    const outs = (entry && entry.outputs) || {};
-    let best = null;
-    let proxy = null;
-    for (const nodeId of Object.keys(outs)) {
-      const bag = outs[nodeId] || {};
-      for (const key of Object.keys(bag)) {
-        const arr = bag[key];
-        if (!Array.isArray(arr)) continue;
-        for (const item of arr) {
-          if (!item) continue;
-          /* The master sits in output/ even when the proxy it came with is a
-             temp file, so the type of the entry does not describe it. */
-          if (typeof item.master === "string" && VIDEO_OUT_RE.test(item.master)) {
-            best = { name: item.master, subfolder: item.subfolder || "", type: "output" };
-            continue;
-          }
-          if (typeof item.filename !== "string") continue;
-          if (!VIDEO_OUT_RE.test(item.filename)) continue;
-          const hit = {
-            name: item.filename,
-            subfolder: item.subfolder || "",
-            type: item.type || "output",
-          };
-          if (PREVIEW_RE.test(item.filename)) proxy = hit; else best = hit;
-        }
-      }
-    }
-    if (!best && proxy) {
-      /* Only a proxy was produced. Better than stopping, but say so - the
-         guide will be subsampled and the join will pay for it. */
-      console.warn("[H3 Studio] Render all: only a preview proxy was found for "
-                 + "this render, chaining from it");
-      return proxy;
-    }
-    return best;
+  async function postJson(path, body) {
+    const r = await api.fetchApi(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let d = null;
+    try { d = await r.json(); } catch (e) { d = null; }
+    if (r.status !== 200) throw new Error((d && d.error) || `${path} ${r.status}`);
+    return d;
   }
 
   function paintRun() {
@@ -5327,24 +5286,16 @@ function buildUI(node) {
       card.append(el("div", "msg"));
       card.append(el("div", "sub"));
       const cancel = el("button", "gcast-btn ghost stopbtn", "Stop");
-      cancel.onclick = (e) => {
+      cancel.onclick = async (e) => {
         e.stopPropagation();
         if (!run) return;
-        if (!run.cancel) {
-          /* Graceful: let the clip on the sampler finish, then stop. */
-          run.cancel = true;
-        } else {
-          /* Second press: give up on whatever the loop is waiting for. Needed
-             because Stop is cooperative -- the loop only checks the flag between
-             clips, so a wait that never settles can never be reached. The
-             pending promise is left to resolve into nothing; what matters is
-             that the loop and the panel come back. */
-          run.force = true;
-          const waiters = run.waiters || [];
-          run.waiters = [];
-          waiters.forEach((rej) => { try { rej(new Error("cancelled")); } catch (e) {} });
-        }
+        /* First press: let the clip on the sampler finish, then stop. Second
+           press: take it off the queue, or interrupt it if it is running. */
+        const now = !!run.stopping;
+        run.stopping = true;
         paintRun();
+        try { await postJson("/cglide/render_job/stop", { id: run.id, now }); }
+        catch (err) { console.warn("[H3 Studio] could not stop the render:", err); }
       };
       card.append(cancel);
       runBox.append(card);
@@ -5353,22 +5304,21 @@ function buildUI(node) {
     }
     const p = proj();
     const name = p.shots[run.i] ? shotLabel(p.shots[run.i], run.i) : `Clip ${run.i + 1}`;
+    const of = run.total ? ` — ${run.k + 1} of ${run.total}` : "";
     runBox.querySelector(".msg").textContent =
-      run.cancel ? `Stopping after ${name}\u2026` : `${name} \u2014 ${run.k + 1} of ${run.total}`;
+      run.stopping ? `Stopping after ${name}…` : `${name}${of}`;
     const stopBtn = runBox.querySelector(".stopbtn");
     if (stopBtn) {
-      stopBtn.textContent = run.cancel ? "Stop now" : "Stop";
-      stopBtn.title = run.cancel
-        ? "Still waiting. Press again to abandon what this clip is waiting for and "
-          + "return to the panel. Clips already finished are kept."
+      stopBtn.textContent = run.stopping ? "Stop now" : "Stop";
+      stopBtn.title = run.stopping
+        ? "Press again to cancel the clip being rendered as well. "
+          + "Clips already finished are kept."
         : "Finish the clip being rendered, then stop. Clips already done are kept.";
     }
     runBox.querySelector(".sub").textContent =
-      run.note || (scopeText(run.scope)
-                   + (run.links ? `, ${run.links} link${run.links === 1 ? "" : "s"}` : "")
-                   + (run.look ? ", look carried across cuts" : "")
-                   + (run.skipped ? `, ${run.skipped} skipped` : ""));
-    bShotsLbl.textContent = `Rendering ${run.k + 1}/${run.total}`;
+      (run.note ? run.note + "… " : "")
+      + "Runs on the server: you can close this tab and come back.";
+    bShotsLbl.textContent = run.total ? `Rendering ${run.k + 1}/${run.total}` : "Rendering";
   }
 
   /* Which clips a scope covers, in project order. The chain is the linked
@@ -5404,7 +5354,7 @@ function buildUI(node) {
     return out;
   }
 
-  /* One loop for every scope. What a clip gets is decided by the clip, not by
+  /* One run for every scope. What a clip gets is decided by the clip, not by
      the run: a linked clip continues from its neighbour's LAST RENDER
      (shots[i-1].lastOut), whether that render happened a second ago in this
      run or last week. That is what makes a scope that starts mid-chain work,
@@ -5453,7 +5403,7 @@ function buildUI(node) {
       const go = confirm(
         "Glide Video is set to a 4:2:0 preset.\n\n"
         + "Linked clips are read back as guides, and a subsampled guide anchors \n"
-        + "the continuation less exactly \u2014 every link, not just one.\n\n"
+        + "the continuation less exactly — every link, not just one.\n\n"
         + "A 4:4:4, ProRes or FFV1 preset is cleaner. Render anyway?");
       if (!go) return;
     }
@@ -5462,122 +5412,140 @@ function buildUI(node) {
        use, so Revert in the project panel brings it back. */
     snapProject("before Render");
     stash();
-    const startIdx = p.idx;
-    run = { cancel: false, force: false, waiters: [], i: queue[0], k: 0,
-            total: queue.length, skipped: range.length - queue.length,
-            scope, look, links, note: "", made: [] };
-    paintRun();
+    commit();
+    p.shots.forEach((s) => { if (!s.id) s.id = uid(); });
+    node.properties.gcast_key = node.properties.gcast_key || (uid() + uid());
 
-    /* Every long await in the loop goes through here, so a second Stop press has
-       something to interrupt. Without it the only cancellation point is between
-       clips, and anything that stalls mid-clip strands the whole panel. */
-    const raceCancel = (promise) => Promise.race([
-      promise,
-      new Promise((_, rej) => { if (run) run.waiters.push(rej); }),
-    ]);
-
-    let stopped = false;
+    let job;
     try {
-      for (let k = 0; k < queue.length; k++) {
-        const i = queue[k];
-        run.i = i; run.k = k; run.note = ""; paintRun();
-        switchTo(i);
-        const sh = p.shots[i];
-        const pred = i > 0 ? p.shots[i - 1] : null;
-        const from = (pred && pred.lastOut) || null;
-        const linked = !!(pred && sh.link);
-
-        if (linked && from) {
-          run.note = "taking the tail of " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
-          await raceCancel(adoptInto(st.cont, from));
-          const win = tailWindow(st.cont.dur || 0, 22);
-          st.cont.start = win.start; st.cont.end = win.end;
-          run.note = "doubling the tail as a seam reference\u2026"; paintRun();
-          await raceCancel(carrySeamRef(from, win));
-          render(); commit(); stash();
-        } else if (linked) {
-          /* Passed the pre-flight, so the slot is already filled - a project
-             from before renders were recorded. Use what is there. */
-          if (!(st.cont && st.cont.file)) {
-            throw new Error(`${shotLabel(sh, i)} is linked but ${shotLabel(pred, i - 1)} `
-                          + "has no render to continue from");
-          }
-          console.log(`[H3 Studio] Render: ${shotLabel(sh, i)} is linked but no render of `
-                    + `${shotLabel(pred, i - 1)} is recorded \u2014 keeping the CONTINUE FROM `
-                    + `already set (${st.cont.file})`);
-        }
-
-        /* The look is for CUTS. A linked clip already has the guide at the
-           seam and the seam reference holding the subject past it; a look
-           reference from the same clip on top of those competes rather than
-           helps. Unlinked clips are where it is the only thread there is. */
-        if (!linked && look && pred) {
-          if (!from) {
-            console.log(`[H3 Studio] Render: no render of ${shotLabel(pred, i - 1)} recorded, `
-                      + `no look to carry into ${shotLabel(sh, i)}`);
-          } else {
-            /* Video slot 1 by convention, and cleared first: carrying into a
-               slot that already holds a hand-picked reference would silently
-               throw it away, so the slot is the look's to own for the run. */
-            run.note = "carrying the look from " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
-            const slot = st.slots.videos[0];
-            await raceCancel(adoptInto(slot, from, { silent: true, reference: true }));
-            slot.carry = true;
-            run.note = "choosing the clearest window\u2026"; paintRun();
-            const got = await raceCancel(applySmartSpan(slot));
-            if (got) {
-              console.log(`[H3 Studio] Render: carry window `
-                        + `${got.start.toFixed(2)}s..${got.end.toFixed(2)}s `
-                        + `(${got.frames}f, score ${got.score})`
-                        + (got.note ? ` \u2014 ${got.note}` : ""));
-            }
-            render(); commit(); stash();
-          }
-        }
-
-        run.note = "queued, waiting for the render\u2026"; paintRun();
-        const id = await raceCancel(queueOnce());
-        const entry = await raceCancel(waitForPrompt(id));
-        const out = videoFromHistory(entry);
-        if (!out) {
-          throw new Error("that render produced no video file \u2014 is Glide Video "
-                        + "(or another video output) connected in the graph?");
-        }
-        /* Recorded on the clip, so the next link can find it from any scope,
-           in this run or a later one. */
-        sh.lastOut = { name: out.name, subfolder: out.subfolder || "",
-                       type: out.type || "output" };
-        run.made.push(out.name);
-        commit();
-        console.log(`[H3 Studio] Render: ${shotLabel(sh, i)} `
-                  + `(${k + 1}/${queue.length}) \u2192 ${out.name}`);
-
-        if (run.cancel) { stopped = true; break; }
+      const value = dataWidget ? dataWidget.value : "";
+      const gp = await app.graphToPrompt();
+      const castId = castPromptId(gp.output, value);
+      if (castId == null) {
+        throw new Error("could not tell which H3 Studio node in the graph is this one");
       }
+      job = await postJson("/cglide/render_job", {
+        key: node.properties.gcast_key,
+        prompt: gp.output,
+        cast_id: castId,
+        h3_original: value,
+        /* what api.queuePrompt sends, so each clip's file still carries the
+           workflow in its metadata */
+        extra_data: { extra_pnginfo: { workflow: gp.workflow } },
+        client_id: api.clientId || api.initialClientId || null,
+        project: p.name || "",
+        count: p.shots.length,
+        seam_ref: !!settings().seamRef,
+        look,
+        clips: queue.map((i) => {
+          const sh = p.shots[i];
+          const pred = i > 0 ? p.shots[i - 1] : null;
+          return {
+            id: sh.id, index: i, name: sh.name || "",
+            link: !!(pred && sh.link),
+            state: clone(sh.state),
+            pred: pred ? { id: pred.id, name: shotLabel(pred, i - 1),
+                           lastOut: pred.lastOut || null } : null,
+          };
+        }),
+      });
     } catch (err) {
-      stopped = true;
-      if (String(err && err.message) === "cancelled") {
-        console.log("[H3 Studio] Render: stopped");
-      } else {
-        console.error("[H3 Studio] Render stopped:", err);
-        /* Clips already finished stay finished, and each one has its render
-           recorded, so the run can be picked up from where it stopped. */
-        alert(`H3 Studio \u2014 Render stopped at clip ${run.i + 1}:\n\n`
-              + `${err && err.message ? err.message : err}\n\n`
-              + `${run.made.length} clip${run.made.length === 1 ? "" : "s"} finished and kept.`);
+      console.error("[H3 Studio] Render could not start:", err);
+      alert(`H3 Studio — Render could not start:\n\n${err && err.message ? err.message : err}`);
+      return;
+    }
+    node.properties.gcast_job = { id: job.id, startIdx: p.idx };
+    persistWorkflow();
+    watchJob();
+  }
+
+  /* Write finished renders back into their clips: the filled CONTINUE FROM,
+     seam and look slots the server prepared, and lastOut, so the next link can
+     find the render from any scope, in this run or a later one. Matched on the
+     clip's id, so a clip moved while the tab was closed still gets its own. */
+  function applyJob(job) {
+    const p = proj();
+    let changed = false;
+    for (const c of job.clips || []) {
+      if (c.status !== "done" || !c.lastOut || !c.state) continue;
+      const tag = `${c.id}:${c.lastOut.name}`;
+      if (run && run.applied.has(tag)) continue;
+      if (run) run.applied.add(tag);
+      const k = p.shots.findIndex((s) => s.id === c.id);
+      if (k < 0) continue;
+      const sh = p.shots[k];
+      sh.state = parseInitial(JSON.stringify(c.state));
+      sh.lastOut = { name: c.lastOut.name, subfolder: c.lastOut.subfolder || "",
+                     type: c.lastOut.type || "output" };
+      if (k === p.idx) load(JSON.stringify(sh.state));
+      changed = true;
+    }
+    if (changed) { commit(); renderShots(); persistWorkflow(); }
+  }
+
+  /* Follow the job the node points at until it ends. Safe to call any time:
+     it does nothing without a job, or while it is already watching one. */
+  async function watchJob() {
+    const J = node.properties && node.properties.gcast_job;
+    if (!J || !J.id || run) return;
+    const p = proj();
+    run = { id: J.id, i: p.idx >= 0 ? p.idx : 0, k: 0, total: 0, note: "",
+            stopping: false, applied: new Set() };
+    paintRun();
+    let job = null;
+    let gone = false;
+    try {
+      for (;;) {
+        /* Removed with the job still going - a workflow tab switched away, or
+           the node deleted. The job runs on; whoever configures this node
+           again picks it up, so leave it recorded. */
+        if (dead) return;
+        let r = null;
+        try { r = await api.fetchApi(`/cglide/render_job?id=${encodeURIComponent(J.id)}`); }
+        catch (e) { r = null; }
+        if (r && r.status === 404) { gone = true; break; }
+        if (!r || r.status !== 200) {
+          run.note = "the server is not answering, still trying"; paintRun();
+          await sleep(3000);
+          continue;
+        }
+        job = await r.json();
+        applyJob(job);
+        const cur = (job.clips || [])[job.k];
+        run.k = job.k | 0; run.total = job.total | 0;
+        run.stopping = run.stopping || !!job.stopping;
+        run.note = job.status === "running" ? (job.note || "") : "";
+        /* The panel follows the clip being rendered, as it did when it drove
+           the run itself. */
+        if (cur) {
+          const at = p.shots.findIndex((s) => s.id === cur.id);
+          if (at >= 0) { run.i = at; switchTo(at); }
+        }
+        paintRun();
+        if (job.status !== "running") break;
+        await sleep(1500);
       }
     } finally {
-      const made = run ? run.made.slice() : [];
-      if (run) run.waiters = [];
+      if (!dead) delete node.properties.gcast_job;
       run = null;
+      if (dead) return;
       paintRun();
-      /* Back to the clip the run started from, so the panel is where it was */
-      if (p.shots[startIdx]) switchTo(startIdx);
+      persistWorkflow();
+      if (p.shots[J.startIdx]) switchTo(J.startIdx);
       renderShots();
-      if (!stopped && made.length) {
-        console.log(`[H3 Studio] Render: done, ${made.length} clip(s), `
-                  + `last file ${made[made.length - 1]}`);
-      }
+    }
+
+    const made = job ? (job.clips || []).filter((c) => c.status === "done").length : 0;
+    if (gone) {
+      alert("H3 Studio: the server no longer knows the render this project was "
+          + "running — ComfyUI was most likely restarted.\n\n"
+          + "Clips it finished are in the output folder; the ones it had not "
+          + "reached were not rendered.");
+    } else if (job && job.status === "error") {
+      alert(`H3 Studio — Render stopped at clip ${(job.k | 0) + 1}:\n\n${job.error}\n\n`
+          + `${made} clip${made === 1 ? "" : "s"} finished and kept.`);
+    } else if (job && job.status === "done") {
+      console.log(`[H3 Studio] Render: done, ${made} clip(s)`);
     }
   }
 
@@ -6878,6 +6846,7 @@ function buildUI(node) {
   return {
     root,
     destroy() {
+      dead = true;
       ac.remove();
       /* a window listener per node instance would outlive the node */
       window.removeEventListener("paste", onPaste, true);
@@ -6890,6 +6859,9 @@ function buildUI(node) {
       window.removeEventListener("auxclick", tlNoAutoWin, true);
     },
     load,
+    /* Pick up a Render all that is still running on the server, if this node
+       recorded one -- the tab that started it may be long gone. */
+    resume() { watchJob(); },
     /* Core's route, used when the node is selected but the pointer is not over
        the panel. No hovered slot, so it routes like a loose drop. */
     pasteFile(file) { takePaste(file, null); },
@@ -7010,6 +6982,8 @@ app.registerExtension({
       const data = this.widgets?.find((w) => w.name === "h3_data");
       if (this.h3ui && data) this.h3ui.load(data.value);
       if (this.gcastTidy) setTimeout(this.gcastTidy, 60);
+      /* properties are in place by now, gcast_job among them */
+      setTimeout(() => this.h3ui?.resume?.(), 0);
       return r;
     };
 

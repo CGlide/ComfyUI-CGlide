@@ -292,8 +292,15 @@ Open the **Project** panel, pick a mode at the bottom, hit **Render all**:
 - **separate** — same loop, no continuation. Just queues all your clips one
   after another.
 
+The run happens on the ComfyUI server, not in the page, so **you can close the
+browser tab** once it has started. Open the workflow again later and the node
+picks the run back up, and every clip that finished in the meantime gets its
+render recorded as if you had watched it. The chain only needs ComfyUI itself
+to keep running: restart it and the clips not reached yet aren't rendered.
+
 While it runs the node is locked and shows which clip it's on. **Stop** finishes
 the clip it's rendering and stops there — everything already done stays done.
+Press it a second time to cancel the clip being rendered as well.
 And if a render fails it stops, tells you which clip, and keeps the finished
 ones, so you can pick it up from there instead of starting over.
 
