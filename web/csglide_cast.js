@@ -159,7 +159,6 @@ const ALL_TOKENS = [
   ...Array.from({ length: MAX_AUDIOS }, (_, i) => `@audio${i + 1}`),
 ];
 
-const DEFAULT_W = 980, MIN_W = 900;   // the panel's width, and the least it still works at
 const MIN_H_REF = 1252, MIN_H_FL = 1252;   // same floor in both modes, so the panel does not shift
 /* v2 sizes the DOM widget from its content, so a shorter mode leaves a gap
  * above the panel. Pinning one content height keeps the top edge put. */
@@ -6955,8 +6954,8 @@ app.registerExtension({
 
       ui.load(data ? data.value : "");
 
-      this.size = [DEFAULT_W, MIN_H_REF];
-      this.setSize?.([DEFAULT_W, MIN_H_REF]);
+      this.size = [980, MIN_H_REF];
+      this.setSize?.([980, MIN_H_REF]);
       return r;
     };
 
@@ -6971,35 +6970,6 @@ app.registerExtension({
       return true;               /* truthy: core treats the paste as handled */
     };
 
-    /* The panel is laid out for ~980px and is unusable much narrower. The width
-     * set in onNodeCreated can be lost: newer frontends keep node geometry in a
-     * layout store, and a node gets its store entry only when it is added to
-     * the graph, so the size given before that does not always survive. The
-     * DOM widget is sized from the node, so a narrow node means a narrow
-     * panel. Re-assert the width once the node is in the graph and after a
-     * workflow restores its saved size, and report it as the minimum so a
-     * drag-resize stops there too. */
-    const ensureWidth = (n) => {
-      const sz = n.size;
-      if (!sz || sz[0] >= MIN_W) return;
-      n.setSize?.([DEFAULT_W, Math.max(sz[1] || 0, n.h3MinHeight || MIN_H_REF)]);
-      n.setDirtyCanvas?.(true, true);
-    };
-
-    const onAdded = nodeType.prototype.onAdded;
-    nodeType.prototype.onAdded = function () {
-      const r = onAdded?.apply(this, arguments);
-      requestAnimationFrame(() => ensureWidth(this));
-      return r;
-    };
-
-    const computeSize = nodeType.prototype.computeSize;
-    nodeType.prototype.computeSize = function (out) {
-      const sz = computeSize ? computeSize.apply(this, arguments) : (out || [0, 0]);
-      sz[0] = Math.max(sz[0] || 0, MIN_W);
-      return sz;
-    };
-
     const onRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
       this.h3ui?.destroy?.();
@@ -7012,7 +6982,6 @@ app.registerExtension({
       const data = this.widgets?.find((w) => w.name === "h3_data");
       if (this.h3ui && data) this.h3ui.load(data.value);
       if (this.gcastTidy) setTimeout(this.gcastTidy, 60);
-      requestAnimationFrame(() => ensureWidth(this));
       /* properties are in place by now, gcast_job among them */
       setTimeout(() => this.h3ui?.resume?.(), 0);
       return r;
@@ -7021,7 +6990,7 @@ app.registerExtension({
     const onResize = nodeType.prototype.onResize;
     nodeType.prototype.onResize = function (size) {
       const minH = this.h3MinHeight || MIN_H_REF;
-      if (size[0] < MIN_W) size[0] = MIN_W;
+      if (size[0] < 900) size[0] = 900;
       if (size[1] < minH) size[1] = minH;
       return onResize?.apply(this, arguments);
     };
