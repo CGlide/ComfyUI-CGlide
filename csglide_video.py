@@ -668,6 +668,15 @@ class CSGlideVideo:
                     "height": int(height),
                     "format": "video/mp4" if ui_name.endswith(".mp4") else "video/" + result["ext"],
                     "master": os.path.basename(result["out_path"]),
+                    # Where the master really is. The entry's own subfolder
+                    # describes the preview proxy (a temp file at the root),
+                    # so without these a reader had to guess the folder - and
+                    # H3 Studio guessed the output root, which picks up an
+                    # older render with the same name when a project writes
+                    # into a folder of its own (Music_clip1/02_00001.mkv vs
+                    # output/02_00001.mkv).
+                    "master_subfolder": (result["subdir"] or "").replace("\\", "/"),
+                    "master_type": "output" if save_output else "temp",
                     "stream": result["stream"],
                 }],
             },

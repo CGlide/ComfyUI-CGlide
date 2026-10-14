@@ -187,6 +187,20 @@ def _load_audio(path):
 # colour
 # --------------------------------------------------------------------------
 
+def _resample(wave, src, dst):
+    """[C, N] from src Hz to dst Hz. torchaudio when it is there (it is in
+    every ComfyUI install that can decode audio), linear otherwise."""
+    if src == dst:
+        return wave
+    try:
+        import torchaudio
+        return torchaudio.functional.resample(wave.float(), int(src), int(dst))
+    except Exception:
+        n = max(1, int(round(wave.shape[-1] * float(dst) / float(src))))
+        return torch.nn.functional.interpolate(wave.float()[None], size=n,
+                                               mode="linear", align_corners=False)[0]
+
+
 def _small(frame):
     """Frame reduced to FIT_SIZE^2 averages, as [P, 3].
 
@@ -344,6 +358,13 @@ class CSGlideJoin:
                     "tooltip": "Truncate the audio to exactly frames/fps. H3 rounds its "
                                "audio grid up, so every clip ships about 8ms more sound "
                                "than picture and that grows at every join."}),
+                "locked_audio": ("AUDIO", {
+                    "tooltip": "Wire H3 Studio's locked_audio. Wherever this clip "
+                               "held real sound - the song, or audio placed on the "
+                               "timeline - the original samples are spliced over "
+                               "`audio`, so the joined track carries the real file "
+                               "rather than the VAE's copy, and H3's own sound "
+                               "everywhere else. Empty when nothing was held."}),
             },
         }
 
@@ -419,12 +440,13 @@ class CSGlideJoin:
         def wave(a):
             if a is None:
                 return None
-            if int(a["sample_rate"]) != rate:
-                raise ValueError("Glide Join: the source is %d Hz and the "
-                                 "continuation is %d Hz. Resample one first."
-                                 % (int(a["sample_rate"]), rate))
             wf = a["waveform"]
-            return wf[0] if wf.dim() == 3 else wf
+            wf = wf[0] if wf.dim() == 3 else wf
+            if int(a["sample_rate"]) != rate:
+                # a song at 44.1 kHz joining a source written at 48 kHz, say
+                print("[Glide Join] resampling %d Hz -> %d Hz" % (int(a["sample_rate"]), rate))
+                wf = _resample(wf, int(a["sample_rate"]), rate)
+            return wf
 
         head, tail = wave(src_audio), wave(ext_audio)
         parts = []
@@ -469,8 +491,65 @@ class CSGlideJoin:
 
     # ---------------- main ----------------
 
+    @staticmethod
+    def _splice_locked(audio, locked):
+        """Put the held sound's original samples back over the decoded track.
+
+        `locked` comes from H3 Studio: raw samples for the whole clip plus a
+        per-sample weight (1 = original, 0 = H3's own sound, ramped across the
+        handovers). Without a weight it is a full replacement - the original
+        song-only behaviour. Lengths are matched to the decoded track, which
+        is the one that runs to the clip's real end.
+        """
+        try:
+            if locked is None or int(locked["waveform"].shape[-1]) == 0:
+                return audio
+        except Exception:
+            return audio
+        lw = locked["waveform"]
+        lw = lw[0] if lw.dim() == 3 else lw
+        lr = int(locked["sample_rate"])
+        weight = locked.get("cglide_weight")
+
+        if audio is None:
+            if weight is not None and float(weight.min()) < 0.999:
+                print("[Glide Join] locked_audio is partial but no decoded audio is "
+                      "wired - the gaps will be silent")
+            return {"waveform": lw[None], "sample_rate": lr}
+
+        dw = audio["waveform"]
+        dw = dw[0] if dw.dim() == 3 else dw
+        dr = int(audio["sample_rate"])
+        if lr != dr:
+            lw = _resample(lw, lr, dr)
+            if weight is not None:
+                weight = torch.nn.functional.interpolate(
+                    weight.float().view(1, 1, -1), size=lw.shape[-1],
+                    mode="linear", align_corners=True).view(-1)
+        n = int(dw.shape[-1])
+        if lw.shape[-1] < n:
+            pad = n - lw.shape[-1]
+            lw = torch.nn.functional.pad(lw, (0, pad))
+            if weight is not None:
+                weight = torch.nn.functional.pad(weight, (0, pad))
+        lw = lw[..., :n]
+        ch = min(int(dw.shape[0]), int(lw.shape[0]))
+        if weight is None:
+            out = lw[:ch].to(dw.dtype)
+            print("[Glide Join] using the held audio over the whole clip")
+        else:
+            w = weight[:n].to(dw.dtype).view(1, -1)
+            out = dw[:ch] * (1.0 - w) + lw[:ch].to(dw.dtype) * w
+            held = float((w > 0.5).float().mean())
+            print("[Glide Join] spliced the original audio over %.0f%% of the clip, "
+                  "H3's own sound on the rest" % (held * 100.0))
+        return {"waveform": out[None].contiguous(), "sample_rate": dr}
+
     def join(self, source_video, images, overlap_frames, seam_mode,
-             seam_blend_frames, match_levels, audio=None, fps=24.0, match_tail=True):
+             seam_blend_frames, match_levels, audio=None, fps=24.0, match_tail=True,
+             locked_audio=None):
+        audio = self._splice_locked(audio, locked_audio)
+
         # No source clip means this is not a continuation at all - the CONTINUE
         # FROM slot is empty, so H3 Studio sends "" and 0 - and the graph is
         # making an ordinary clip. Pass the frames straight through instead of

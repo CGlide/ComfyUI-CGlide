@@ -375,6 +375,40 @@ async def _probe_file(request: web.Request) -> web.Response:
     return web.json_response(info)
 
 
+def _existing_copy(directory: str, src: str) -> str | None:
+    """An earlier copy of ``src`` already sitting in ``directory``, or None.
+
+    Every adopt used to make a fresh copy, so one render taken by CONTINUE FROM
+    a few times turned into 04_00002_2, _3 ... _7 in input/cglide/ - the same
+    bytes under names that match nothing in output/. copy2 keeps the source's
+    modification time, so a copy with the same size AND the same mtime as the
+    source is that file; a newer render under the same name differs in both.
+    """
+    try:
+        st = os.stat(src)
+    except OSError:
+        return None
+    stem, ext = os.path.splitext(os.path.basename(src))
+    pat = re.compile(r"^%s(_\d+)?%s$" % (re.escape(stem), re.escape(ext)), re.I)
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    # the plain name first, then _1, _2 ... so the oldest copy is the one reused
+    def order(n):
+        m = re.search(r"_(\d+)%s$" % re.escape(ext), n, re.I)
+        return int(m.group(1)) if (m and n != stem + ext) else 0
+    for name in sorted((n for n in names if pat.match(n)), key=order):
+        path = os.path.join(directory, name)
+        try:
+            cs = os.stat(path)
+        except OSError:
+            continue
+        if cs.st_size == st.st_size and int(cs.st_mtime) == int(st.st_mtime):
+            return path
+    return None
+
+
 @PromptServer.instance.routes.post("/cglide/adopt_output")
 async def _adopt_output(request: web.Request) -> web.Response:
     """Copy one output file into input/<ASSET_SUBFOLDER>/ and report its name."""
@@ -405,17 +439,22 @@ async def _adopt_output(request: web.Request) -> web.Response:
     dest_dir = os.path.join(folder_paths.get_input_directory(), ASSET_SUBFOLDER)
     try:
         os.makedirs(dest_dir, exist_ok=True)
-        dest = _unique_path(dest_dir, os.path.basename(src))
         loop = asyncio.get_running_loop()
-        # copy2, not copy: a 12s 4:4:4 render is big enough that doing it on the
-        # event loop would stall every other request for the duration.
-        await loop.run_in_executor(None, shutil.copy2, src, dest)
+        dest = _existing_copy(dest_dir, src)
+        reused = dest is not None
+        if not reused:
+            dest = _unique_path(dest_dir, os.path.basename(src))
+            # copy2, not copy: a 12s 4:4:4 render is big enough that doing it on
+            # the event loop would stall every other request for the duration -
+            # and copy2 keeps the mtime _existing_copy recognises it by.
+            await loop.run_in_executor(None, shutil.copy2, src, dest)
         info = await loop.run_in_executor(None, _probe, dest)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
     print(f"[H3 Studio] adopted {os.path.basename(src)} "
           f"-> input/{ASSET_SUBFOLDER}/{os.path.basename(dest)}"
+          + (" (already there, reused)" if reused else "")
           + (f"  ({info['codec']} {info['chroma']})" if info["codec"] else ""))
     return web.json_response({
         "name": os.path.basename(dest),

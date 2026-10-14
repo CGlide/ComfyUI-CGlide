@@ -583,7 +583,7 @@ def parse_h3_data(raw):
             "project": str(raw_clip.get("project") or "")[:120],
         }
 
-    return {
+    out = {
         "mode": "fl2va" if data.get("mode") == "fl2va" else "ref2va",
         "width": int(data.get("width") or 1344),
         "height": int(data.get("height") or 768),
@@ -600,6 +600,81 @@ def parse_h3_data(raw):
         "audios": _slot_list(slots.get("audios"), MAX_AUDIOS),
         "cont": cont,
         "clip": clip,
+        "song": _parse_song(data.get("song")),
+        "audio_mode": "timeline" if data.get("audio_mode") == "timeline" else "ref",
+    }
+    # TIMELINE AUDIO. The audio slots either feed the encoder as references
+    # (<Audio j>, the default) or are PLACED: written into the audio half of the
+    # target latent at a time in the clip and held there, with H3 generating its
+    # own sound in the gaps. fl2va has no audio references at all, so there the
+    # slots are always placed. A placed slot is moved out of "audios" so the
+    # reference path and the tag map never see it.
+    if out["mode"] == "fl2va" or out["audio_mode"] == "timeline":
+        out["placed"] = _placed_list(slots.get("audios"))
+        out["audios"] = [None] * MAX_AUDIOS
+    else:
+        out["placed"] = [None] * MAX_AUDIOS
+    return out
+
+
+def _placed_list(raw):
+    """Audio slots as timeline pieces: which part of the file, where it lands."""
+    out = []
+    src = raw if isinstance(raw, list) else []
+
+    def num(v, d):
+        try:
+            v = float(v)
+        except Exception:
+            return d
+        return v if math.isfinite(v) else d
+
+    for i in range(MAX_AUDIOS):
+        item = src[i] if i < len(src) and isinstance(src[i], dict) else {}
+        if not item.get("file"):
+            out.append(None)
+            continue
+        start = max(0.0, num(item.get("start"), 0.0))
+        end = item.get("end")
+        end = num(end, None) if end not in (None, "") else None
+        if end is not None and end <= start:
+            end = None
+        out.append({
+            "file": str(item["file"]),
+            "start": start,
+            "end": end,
+            "at": max(0.0, num(item.get("at"), 0.0)),
+            "hold": max(0.0, min(1.0, num(item.get("hold"), 1.0))),
+        })
+    return out
+
+
+def _parse_song(raw):
+    """SONG: the project's track, already windowed for THIS clip by the UI.
+
+    The panel knows the whole project - every clip's length and which ones are
+    linked - so it works out where this clip sits in the song and sends only
+    that: the file, the second this clip's frame 0 lands on, and how hard to
+    hold it. Nothing here needs the other clips.
+    """
+    if not isinstance(raw, dict) or not raw.get("file"):
+        return None
+    try:
+        start = float(raw.get("start") or 0.0)
+    except Exception:
+        start = 0.0
+    try:
+        strength = float(raw.get("strength"))
+    except Exception:
+        strength = 1.0
+    if not math.isfinite(start):
+        start = 0.0
+    if not math.isfinite(strength):
+        strength = 1.0
+    return {
+        "file": str(raw["file"]),
+        "start": max(0.0, start),
+        "strength": max(0.0, min(1.0, strength)),
     }
 
 
@@ -747,6 +822,20 @@ def build_tag_map(cfg, has_first, has_last):
     return tags, presentation
 
 
+def strip_placed_tokens(prompt, cfg):
+    """A timeline slot is not a reference: the encoder never sees it, so its
+    @audio token has nothing to point at. Dropped here with its own reason,
+    rather than reaching transcription and being reported as an empty slot."""
+    out = prompt
+    for n, slot in enumerate(cfg.get("placed") or [], start=1):
+        tok = "@audio%d" % n
+        if slot and re.search(re.escape(tok) + r"(?![0-9A-Za-z])", out):
+            print("[H3 Studio] %s is on the timeline, not a reference - dropped from "
+                  "the prompt (describe the sound in words instead)." % tok)
+            out = re.sub(re.escape(tok) + r"(?![0-9A-Za-z])", "", out)
+    return out
+
+
 def transcribe_prompt(prompt, tags, known_tokens):
     """Replace @tokens with real tags. Tokens pointing at empty slots are dropped."""
     out = prompt
@@ -849,11 +938,15 @@ class CSGlideCast:
     # clip_name is APPENDED, never inserted. LiteGraph stores links by output
     # index, so a new socket next to source_video would silently rewire every
     # saved workflow that already uses this node.
+    # locked_audio is appended for the same reason: the held sound of this clip
+    # (song window and/or timeline audio) as raw samples with a splice weight,
+    # for Glide Join's locked_audio input. Empty (zero samples) when nothing is
+    # held, which Glide Join reads as "use audio".
     RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT",
-                    "STRING", "IMAGE", "CONDITIONING", "STRING")
+                    "STRING", "IMAGE", "CONDITIONING", "STRING", "AUDIO")
     RETURN_NAMES = ("positive", "latent", "width", "height", "length", "seconds",
                     "overlap_frames", "source_video", "guide_frames",
-                    "positive_refine", "clip_name")
+                    "positive_refine", "clip_name", "locked_audio")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -1098,6 +1191,168 @@ class CSGlideCast:
 
     # ---------------- continuation ----------------
 
+    # ---------------- locked audio: song + timeline pieces ----------------
+
+    @staticmethod
+    def _silence():
+        return {"waveform": torch.zeros((1, 2, 0)), "sample_rate": 32000}
+
+    # Inner edges of a placed piece hand over to H3 over this many audio latent
+    # frames (40 per second), so the held sound and the generated sound meet in
+    # a blend instead of a hard butt joint. Clip edges and edges against the
+    # song need no handover and get none.
+    EDGE_FRAMES = 4
+
+    def _lock_audio(self, cfg, audio_vae, latent, seconds):
+        """Write held audio into the AUDIO half of the target latent and pin it.
+
+        ComfyUI's MiniMaxH3 model takes a per-stream noise mask, per audio
+        latent frame: a row at mask 0 runs at AUDIO_COND_TIMESTEP and is
+        re-injected clean every step (model_base.MiniMaxH3.scale_latent_inpaint),
+        a row at mask 1 is generated as usual, anything between is held that
+        much. So sound can be held over part of a clip and generated over the
+        rest - the same inpainting the LTX director does, on H3's audio.
+
+        Two layers, song first:
+          song   - the project track, over the whole clip, at its own hold.
+          placed - audio slots on the timeline, each a [start, end] window of
+                   its file landing at `at` seconds into the clip. A later slot
+                   is written over an earlier one where they overlap.
+
+        Returns (latent, locked) where locked is the held sound as raw samples,
+        untouched by the VAE, plus a per-sample weight under "cglide_weight":
+        1 where the original should replace the decoded sound outright, 0 where
+        H3's own sound stands, ramped across the handovers. Glide Join splices
+        with it. Only a hold of exactly 1 is spliced - below that the point is
+        to let H3 rework the sound, so the decoded version is the one to keep.
+        """
+        song = cfg.get("song")
+        placed = [p for p in (cfg.get("placed") or []) if p]
+        if not song and not placed:
+            return latent, self._silence()
+        if audio_vae is None:
+            raise ValueError("H3 Studio: held audio (the song or timeline audio) needs "
+                             "the audio VAE connected (minimax_h3_audio_vae_fp32).")
+
+        video, audio = latent["samples"].unbind()
+        T = int(audio.shape[-1])
+        new_audio = audio.clone()
+        mask = torch.ones(T, dtype=torch.float32)      # 1 = generate
+        rate = None
+        layers = []                                     # (wave, sr, frame0, frames, hold, ramp_in, ramp_out)
+
+        def load(file, start, end):
+            try:
+                return _load_audio(file, start, end)
+            except ValueError:
+                return None                             # window past the end of the file
+
+        if song:
+            start = song["start"]
+            tr = load(song["file"], start, start + seconds)
+            sr = int(tr["sample_rate"]) if tr else 32000
+            wf = tr["waveform"] if tr else torch.zeros((1, 2, 0))
+            need = int(round(seconds * sr))
+            short = need - int(wf.shape[-1])
+            if short > 0:
+                wf = torch.cat([wf, torch.zeros(wf.shape[:-1] + (short,), dtype=wf.dtype)], dim=-1)
+            wf = wf[..., :need]
+            rate = sr
+            layers.append((wf, sr, 0, T, song["strength"], False, False))
+            print("[H3 Studio] song: %s %.3fs..%.3fs held at %.2f%s"
+                  % (song["file"], start, start + seconds, song["strength"],
+                     "" if short <= 0 else
+                     " - the song ends %.2fs early, silence after" % (short / float(sr))))
+
+        for n, p in enumerate(cfg.get("placed") or [], start=1):
+            if not p:
+                continue
+            f0 = int(round(p["at"] * AUDIO_LATENT_FPS))
+            if f0 >= T:
+                print("[H3 Studio] audio %d: placed at %.2fs, past the end of this "
+                      "%.2fs clip - skipped" % (n, p["at"], seconds))
+                continue
+            room = (T - f0) / float(AUDIO_LATENT_FPS)
+            end = p["end"]
+            want_end = p["start"] + room if end is None else min(end, p["start"] + room)
+            tr = load(p["file"], p["start"], want_end)
+            if tr is None:
+                print("[H3 Studio] audio %d: nothing in %s at %.2fs - skipped"
+                      % (n, p["file"], p["start"]))
+                continue
+            sr = int(tr["sample_rate"])
+            wf = tr["waveform"]
+            frames = min(T - f0, int(round(wf.shape[-1] / float(sr) * AUDIO_LATENT_FPS)))
+            if frames <= 0:
+                continue
+            if rate is None:
+                rate = sr
+            layers.append((wf, sr, f0, frames, p["hold"],
+                           f0 > 0 and not song, f0 + frames < T and not song))
+            print("[H3 Studio] audio %d: %s %.2fs..%.2fs placed at %.2fs..%.2fs in the "
+                  "clip, held at %.2f" % (n, p["file"], p["start"],
+                                          p["start"] + frames / float(AUDIO_LATENT_FPS),
+                                          f0 / float(AUDIO_LATENT_FPS),
+                                          (f0 + frames) / float(AUDIO_LATENT_FPS), p["hold"]))
+
+        if not layers:
+            return latent, self._silence()
+
+        rate = rate or 32000
+        n_out = int(round(seconds * rate))
+        exact = torch.zeros((2, n_out))
+        weight = torch.zeros(n_out)
+        per_frame = rate / float(AUDIO_LATENT_FPS)
+
+        for wf, sr, f0, frames, hold, r_in, r_out in layers:
+            # latent: encode this piece on its own, starting on its own frame
+            z, _ = self._encode_ref_audio(audio_vae, {"waveform": wf, "sample_rate": sr})
+            z = z.to(device=new_audio.device, dtype=new_audio.dtype)
+            k = min(frames, int(z.shape[-1]))
+            new_audio[..., f0:f0 + k] = z[..., :k].expand(new_audio.shape[0], -1, -1, -1)
+
+            # how much of each frame is held: 1 inside, ramped at inner edges
+            held = torch.ones(k)
+            e = min(self.EDGE_FRAMES, k // 2)
+            if e > 0:
+                ramp = torch.arange(1, e + 1, dtype=torch.float32) / (e + 1)
+                if r_in:
+                    held[:e] = ramp
+                if r_out:
+                    held[k - e:] = ramp.flip(0)
+            mask[f0:f0 + k] = 1.0 - hold * held
+
+            # exact samples for the splice, at the output rate
+            w = wf[0] if wf.dim() == 3 else wf
+            if sr != rate:
+                if torchaudio is None:
+                    raise RuntimeError("H3 Studio: torchaudio is needed to mix audio "
+                                       "files at different sample rates.")
+                w = torchaudio.functional.resample(w, sr, rate)
+            s0 = int(round(f0 * per_frame))
+            s1 = min(n_out, int(round((f0 + k) * per_frame)))
+            m = max(0, min(s1 - s0, int(w.shape[-1])))
+            exact[:, s0:s0 + m] = w[:2, :m]
+            if hold >= 1.0 - 1e-6:
+                ws = torch.nn.functional.interpolate(held.view(1, 1, -1), size=m,
+                                                     mode="linear", align_corners=True).view(-1)
+                weight[s0:s0 + m] = ws
+            else:
+                weight[s0:s0 + m] = 0.0
+
+        a_mask = mask.view(1, 1, 1, T).expand_as(new_audio).to(new_audio.dtype).clone()
+        out = dict(latent)
+        out["samples"] = comfy.nested_tensor.NestedTensor((video, new_audio))
+        out["noise_mask"] = comfy.nested_tensor.NestedTensor((torch.ones_like(video), a_mask))
+        held_frames = int((mask < 1.0 - 1e-6).sum())
+        if held_frames >= T:
+            print("[H3 Studio] audio held over the whole %.2fs clip" % seconds)
+        else:
+            print("[H3 Studio] audio held over %.2fs of %.2fs, H3 generates the rest"
+                  % (held_frames / float(AUDIO_LATENT_FPS), seconds))
+        return out, {"waveform": exact[None].contiguous(), "sample_rate": int(rate),
+                     "cglide_weight": weight}
+
     def _continuation(self, cfg, vae, audio_vae, latent, width, height, frame_count):
         """Anchor the previous clip's tail at frame 0 of this one.
 
@@ -1238,12 +1493,13 @@ class CSGlideCast:
                     source, guide_frames,
                     self._without_keyframes(refine_cond
                                             if refine_cond is not None else cond),
-                    clip_label(cfg))
+                    clip_label(cfg), locked_audio)
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         latent, frame_count = _empty_av_latent(width, height, cfg["length"])
         seconds = frame_count / FPS
+        latent, locked_audio = self._lock_audio(cfg, audio_vae, latent, seconds)
 
         if cfg["mode"] == "fl2va":
             first = first_frame if first_frame is not None else (
@@ -1252,7 +1508,8 @@ class CSGlideCast:
                 _load_image(cfg["last"]["file"]) if cfg["last"] else None)
 
             tags, _ = build_tag_map(cfg, first is not None, last is not None)
-            prompt = transcribe_prompt(cfg["prompt"], tags, ["@first", "@last"])
+            prompt = transcribe_prompt(strip_placed_tokens(cfg["prompt"], cfg),
+                                       tags, ["@first", "@last"])
 
             images, keyframes = [], []
             if first is not None:
@@ -1281,7 +1538,8 @@ class CSGlideCast:
                  + [f"@videoaudio{i}" for i in range(1, MAX_VIDEOS + 1)]
                  + [f"@audio{i}" for i in range(1, MAX_AUDIOS + 1)])
         tags, presentation = build_tag_map(cfg, False, False)
-        prompt = transcribe_prompt(inject_carry_note(cfg, tags), tags, known)
+        prompt = transcribe_prompt(strip_placed_tokens(inject_carry_note(cfg, tags), cfg),
+                                   tags, known)
 
         ref_items, ref_blocks = self._refs(cfg, vae, audio_vae, width, height, frame_count)
         if presentation:

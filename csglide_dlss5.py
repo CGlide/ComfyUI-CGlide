@@ -114,7 +114,7 @@ def _allowed_roots() -> list[Path]:
             Path(folder_paths.get_temp_directory()).resolve()]
 
 
-def _resolve_source(value: str) -> Path:
+def _resolve_source(value: str, confine: bool = True) -> Path:
     """A video inside ComfyUI's input, output or temp folder - nowhere else.
 
     The routes below take this value straight from an HTTP request, so it is
@@ -130,9 +130,13 @@ def _resolve_source(value: str) -> Path:
     if not candidate.is_absolute():
         candidate = Path(folder_paths.get_input_directory()) / raw
     candidate = candidate.resolve()
-    if not any(candidate.is_relative_to(root) for root in _allowed_roots()):
-        raise ValueError("Glide DLSS5 only reads videos inside ComfyUI's input, "
-                         "output or temp folders. Drop the file on the node instead.")
+    # Confined only for the HTTP routes (preview, scrub frames, info), where the
+    # path comes from a request. A queued render runs the user's own graph,
+    # like any Load Video node, so a full path anywhere on disk is fine there.
+    if confine and not any(candidate.is_relative_to(root) for root in _allowed_roots()):
+        raise ValueError("The preview only reads videos inside ComfyUI's input, "
+                         "output or temp folders - drop the file on the node to "
+                         "preview it. Queueing a render works from any folder.")
     if candidate.suffix.lower() not in VIDEO_EXTS:
         raise ValueError(f"{candidate.name} is not a video file this node reads.")
     if not candidate.is_file():
@@ -337,6 +341,84 @@ async def _route_frame(request):
         return web.json_response({"error": str(exc)}, status=400)
 
 
+# ---------------------------------------------------------- chunked upload
+#
+# ComfyUI caps one request body at --max-upload-size (100 MB unless raised),
+# and a 12 s 4:4:4 master or a 60 s DLSS output is well past that. /upload/image
+# then answers with a plain-text "Maximum request body size exceeded" and the
+# drop fails. So big files come up in 8 MB pieces, each written at its own
+# offset, and are renamed into input/glide_dlss5 when the last one lands.
+
+_UPLOAD_ID_OK = set("0123456789abcdef")
+
+
+def _part_path(upload_id: str) -> Path:
+    folder = Path(folder_paths.get_input_directory()) / UPLOAD_SUBFOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f".part_{upload_id}"
+
+
+def _sweep_parts(folder: Path, max_age: float = 3600.0) -> None:
+    """Pieces of an upload that never finished (tab closed mid-way)."""
+    now = time.time()
+    for part in folder.glob(".part_*"):
+        try:
+            if now - part.stat().st_mtime > max_age:
+                part.unlink()
+        except OSError:
+            pass
+
+
+def _free_name(folder: Path, name: str) -> Path:
+    stem, ext = os.path.splitext(name)
+    target = folder / name
+    n = 1
+    while target.exists():
+        target = folder / f"{stem}_{n}{ext}"
+        n += 1
+    return target
+
+
+@routes.post("/csglide_dlss5/upload_chunk")
+async def _route_upload_chunk(request):
+    try:
+        q = request.query
+        upload_id = str(q.get("id", "")).lower()
+        if not (8 <= len(upload_id) <= 64) or not set(upload_id) <= _UPLOAD_ID_OK:
+            raise ValueError("Bad upload id.")
+        name = os.path.basename(str(q.get("name", ""))).strip()
+        if not name or Path(name).suffix.lower() not in VIDEO_EXTS:
+            raise ValueError(f"{name or 'That file'} is not a video file this node reads.")
+        offset = int(q.get("offset", "0"))
+        final = q.get("final", "0") == "1"
+        if offset < 0:
+            raise ValueError("Bad offset.")
+        data = await request.read()
+        part = _part_path(upload_id)
+
+        def write():
+            if offset == 0:
+                _sweep_parts(part.parent)
+            with open(part, "r+b" if part.exists() else "wb") as fh:
+                fh.seek(offset)
+                fh.write(data)
+            if not final:
+                return None
+            target = _free_name(part.parent, name)
+            os.replace(part, target)
+            return target
+
+        target = await asyncio.to_thread(write)
+        if target is None:
+            return web.json_response({"ok": True, "received": offset + len(data)})
+        print(f"[Glide DLSS5] uploaded {name} in pieces -> "
+              f"input/{UPLOAD_SUBFOLDER}/{target.name} ({target.stat().st_size / 1e6:.0f} MB)")
+        return web.json_response({"name": target.name, "subfolder": UPLOAD_SUBFOLDER,
+                                  "type": "input"})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
 @routes.post("/csglide_dlss5/preview")
 async def _route_preview(request):
     try:
@@ -420,14 +502,14 @@ class CSGlideDLSS5:
     @classmethod
     def IS_CHANGED(cls, video="", **kwargs):
         try:
-            status = _resolve_source(video).stat()
+            status = _resolve_source(video, confine=False).stat()
             return f"{status.st_mtime_ns}:{status.st_size}"
         except Exception:
             return float("nan")
 
     def render(self, settings, video, codec, container, quality, filename_prefix,
                copy_audio, preview_frames, output_directory="", name_from_source=True):
-        source = _resolve_source(video)
+        source = _resolve_source(video, confine=False)
         node = _Engine.mod("nodes.enhance_video").DLSS5EnhanceVideoFile
         out = node.execute(
             video_path=str(source), settings=settings, codec=codec, container=container,
@@ -446,9 +528,9 @@ class CSGlideDLSS5:
 # ------------------------------------------------------------- batch node
 
 def _resolve_folder(value: str) -> Path:
-    """A folder inside ComfyUI's input, output or temp folder - the same
-    confinement as a single video. Relative names live in the output folder,
-    where renders are (so "Static" means output/Static)."""
+    """The batch folder. Relative names live in the output folder, where renders
+    are (so "Static" means output/Static); a full path can be anywhere - this
+    only runs from the queue, on the user's own graph, never from a request."""
     raw = str(value or "").strip().strip('"').strip("'")
     if not raw:
         raise ValueError("Type the folder that holds your clips, e.g. Static "
@@ -457,9 +539,6 @@ def _resolve_folder(value: str) -> Path:
     if not candidate.is_absolute():
         candidate = Path(folder_paths.get_output_directory()) / raw
     candidate = candidate.resolve()
-    if not any(candidate.is_relative_to(root) for root in _allowed_roots()):
-        raise ValueError("Glide DLSS5 Batch only reads folders inside ComfyUI's "
-                         "input, output or temp folders.")
     if not candidate.is_dir():
         raise FileNotFoundError(f"No folder at {candidate}")
     return candidate

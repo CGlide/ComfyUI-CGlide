@@ -211,17 +211,52 @@ function setup(node) {
   };
   state.load = load;
 
+  /* ComfyUI answers an oversized body with plain text ("Maximum request body
+     size exceeded"), not JSON - read it as text so the real reason shows. */
+  const readJson = async (r) => {
+    const text = await r.text();
+    try { return JSON.parse(text); }
+    catch { throw new Error(text.trim().slice(0, 160) || `${r.status} ${r.statusText}`); }
+  };
+
+  /* Over ComfyUI's per-request cap (100 MB by default) a single upload is
+     refused, so anything big goes up in 8 MB pieces to the pack's own route. */
+  const CHUNK = 8 * 1024 * 1024;
+  const BIG = 48 * 1024 * 1024;
+  const uploadChunked = async (file) => {
+    const id = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now())
+      .replace(/[^0-9a-f]/gi, "").toLowerCase().slice(0, 32).padEnd(16, "0");
+    let j = null;
+    for (let off = 0; off < file.size; off += CHUNK) {
+      const last = off + CHUNK >= file.size;
+      const q = new URLSearchParams({ id, name: file.name, offset: String(off), final: last ? "1" : "0" });
+      const r = await api.fetchApi(`/csglide_dlss5/upload_chunk?${q}`, {
+        method: "POST", headers: { "Content-Type": "application/octet-stream" },
+        body: file.slice(off, off + CHUNK),
+      });
+      j = await readJson(r);
+      if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+      say(`Uploading ${file.name}… ${Math.round(Math.min(file.size, off + CHUNK) / file.size * 100)}%`);
+    }
+    return j;
+  };
+
   const upload = async (file) => {
     if (!isVideo(file.name)) { say(`${file.name} is not a video file.`, "err"); return; }
     say(`Uploading ${file.name}…`);
-    const body = new FormData();
-    body.append("image", file, file.name);
-    body.append("subfolder", "glide_dlss5");
-    body.append("type", "input");
     try {
-      const r = await api.fetchApi("/upload/image", { method: "POST", body });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || r.statusText);
+      let j;
+      if (file.size > BIG) {
+        j = await uploadChunked(file);
+      } else {
+        const body = new FormData();
+        body.append("image", file, file.name);
+        body.append("subfolder", "glide_dlss5");
+        body.append("type", "input");
+        const r = await api.fetchApi("/upload/image", { method: "POST", body });
+        j = await readJson(r);
+        if (!r.ok) throw new Error(j?.error || r.statusText);
+      }
       const value = (j.subfolder ? `${j.subfolder}/` : "") + j.name;
       if (vw) { vw.value = value; vw.callback?.(value); }
       state.frame = 0;
