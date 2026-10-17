@@ -1369,6 +1369,13 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 .gcast-set-row .txt { flex:1 1 auto; min-width:0; }
 .gcast-set-row .t { font-size:11.5px; color:var(--h3-txt); line-height:1.35; }
 .gcast-set-row .d { font-size:10.5px; color:var(--h3-dim); line-height:1.45; padding-top:3px; }
+/* compact: label left, control right, one line, a rule between rows */
+.gcast-set-row.line { align-items:center; padding:7px 2px; border-top:1px solid var(--h3-line); }
+.gcast-set-row.line .t { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; }
+.gcast-set-row.line .gcast-seg, .gcast-set-row.line .gcast-btn { flex:0 0 auto; }
+.gcast-seg.small button { padding:2px 9px; font-size:10.5px; }
+.gcast-btn.small { padding:2px 9px; font-size:10.5px; }
 .gcast-shots input { background:var(--h3-well); color:var(--h3-txt); box-sizing:border-box;
   border:1px solid var(--h3-line); border-radius:5px; padding:4px 7px; width:100%;
   font-family:inherit; font-size:11.5px; outline:none; }
@@ -1795,7 +1802,14 @@ function buildUI(node) {
    * Read straight off node.properties, never through proj(): commit() runs
    * during buildUI, before the project helpers below exist.
    */
-  const SONG_OVERLAP = 22;          /* the window Render takes off a linked tail */
+  /* The window a continuation takes off a linked tail: 22 frames (tested
+     default) or 39, from Settings. Read off node.properties directly - this
+     runs from render(), which can fire before settings() is set up. Only the
+     grid sizes exist (17k+5), and 5 is too short to carry motion. */
+  const overlapFrames = () => {
+    const s = node.properties && node.properties.gcast_settings;
+    return (s && +s.overlap === 39) ? 39 : 22;
+  };
   const songSnap = (n) => { let g = Math.floor(n); while (g > 0 && g % 17 !== 5) g--; return g; };
 
   function songOf() {
@@ -1820,7 +1834,7 @@ function buildUI(node) {
       const g = songSnap(Math.round((+c.end - +c.start) * FPS) + 1);
       if (g >= 5) return g;
     }
-    return SONG_OVERLAP;
+    return overlapFrames();
   }
 
   /* Seconds into the song where clip i's frame 0 lands. */
@@ -2451,7 +2465,7 @@ function buildUI(node) {
       /* A clip dropped straight on CONTINUE FROM is a continuation like any
          other, so it gets the seam reference the adopt route gets. Pin the
          guide window first so both land on the same tail. */
-      const win = tailWindow(slot.dur || 0, 22);
+      const win = tailWindow(slot.dur || 0, overlapFrames());
       slot.start = win.start; slot.end = win.end;
       await carrySeamRef({ mirror: slot }, win);
       render(); commit();
@@ -2727,7 +2741,7 @@ function buildUI(node) {
       await adoptInto(slot, pick);
       /* Pin the guide's window here rather than leaving it to render()'s
          normalisation, so the seam reference has a window to mirror. */
-      const win = tailWindow(slot.dur || 0, 22);
+      const win = tailWindow(slot.dur || 0, overlapFrames());
       slot.start = win.start; slot.end = win.end;
       if (slot === st.cont) await carrySeamRef({ mirror: slot }, win);
       render(); commit();
@@ -4070,7 +4084,7 @@ function buildUI(node) {
      * or to the largest grid run the clip can actually supply. */
     const c = st.cont;
     if (c.file && c.dur && (c.start || 0) <= 0.001 && (c.end || 0) >= c.dur - 0.001) {
-      const w = tailWindow(c.dur, 22);
+      const w = tailWindow(c.dur, overlapFrames());
       c.start = w.start; c.end = w.end;
     }
     /* No section of its own: it joins the row that is already on screen, so the
@@ -6595,7 +6609,7 @@ function buildUI(node) {
           if (linked && from) {
             run.note = "taking the tail of " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
             await raceCancel(adoptInto(st.cont, from));
-            const win = tailWindow(st.cont.dur || 0, 22);
+            const win = tailWindow(st.cont.dur || 0, overlapFrames());
             st.cont.start = win.start; st.cont.end = win.end;
             run.note = "doubling the tail as a seam reference\u2026"; paintRun();
             /* Same file as the guide, not a second copy of it: adopting twice
@@ -7083,7 +7097,7 @@ function buildUI(node) {
      the next link continued from the old place. The guide alone holds the
      join. Every workflow saved before v4 is switched off once; turning it
      back on after that sticks. */
-  const SETTING_DEFAULTS = { seamRef: false, seamRefV: 4, clipList: false };
+  const SETTING_DEFAULTS = { seamRef: false, seamRefV: 4, clipList: false, overlap: 22 };
   function settings() {
     node.properties = node.properties || {};
     const cur = node.properties.gcast_settings;
@@ -7108,23 +7122,42 @@ function buildUI(node) {
     head.append(el("div", "gcast-shots-file", `build ${H3_BUILD}`));
     setPanel.append(head);
 
-    const row = el("label", "gcast-set-row");
+    /* One line per setting, explanations in the tooltips. */
+    const row = el("label", "gcast-set-row line");
     const cb = el("input"); cb.type = "checkbox"; cb.checked = !!cfg.seamRef;
-    const txt = el("div", "txt");
-    txt.append(el("div", "t", "Reference video tail on continuation"));
-    txt.append(el("div", "d",
-      "Puts the same tail the guide uses into video " + (SEAM_REF_SLOT + 1)
-      + " as well, on Render all, last render, and dropping a clip on "
-      + "CONTINUE FROM. Off by default: with no timing of its own, H3 can play "
-      + "that tail back at the END of the clip, and the next link then "
-      + "continues from the old shot. Can hold the look better on a clip that "
-      + "stays in the same place."));
-    row.append(cb, txt);
+    row.append(cb, el("div", "t", "Reference video tail on continuation"));
+    row.title = "Puts the same tail the guide uses into video " + (SEAM_REF_SLOT + 1)
+      + " as well. Off by default: H3 can play that tail back at the END of the "
+      + "clip, and the next link then continues from the old shot. Can hold the "
+      + "look better on a clip that stays in the same place.";
     cb.onchange = () => {
       settings().seamRef = cb.checked;
       commit();
     };
     setPanel.append(row);
+
+    /* Continuation overlap. 22 is the tested default; 39 hands the next clip
+       more of the previous one's motion, at the cost of re-rendering more of
+       it. Only grid sizes exist, so it is a choice of two, not a number. */
+    const orow = el("div", "gcast-set-row line");
+    orow.append(el("div", "t", "Continuation overlap"));
+    orow.title = "How much of the previous clip a linked clip continues from. "
+      + "22 frames (0.9s) is the tested default; 39 (1.6s) carries more motion "
+      + "through the join but re-renders more of it. Applies to the next "
+      + "adoption - a CONTINUE FROM already filled keeps its window.";
+    const oseg = el("div", "gcast-seg small");
+    [22, 39].forEach((v) => {
+      const b = el("button", null, `${v}f`);
+      b.setAttribute("aria-pressed", String(overlapFrames() === v));
+      b.onclick = (e) => {
+        e.stopPropagation();
+        settings().overlap = v;
+        commit(); render(); paintSettings();
+      };
+      oseg.append(b);
+    });
+    orow.append(oseg);
+    setPanel.append(orow);
 
     /* Project latents. Every render with a latent wired leaves a ~30 MB
        .h3latent beside it, and they are only needed to continue FROM that
@@ -7132,18 +7165,18 @@ function buildUI(node) {
        and says how much, then deletes on a confirm. The server decides which
        files those are (see project_latents); the browser only names the
        project's renders. */
-    const lrow = el("div", "gcast-set-row");
-    const ltxt = el("div", "txt");
-    ltxt.append(el("div", "t", "Project latents"));
-    const ldesc = el("div", "d",
-      "Each render saves a .h3latent next to its video for latent hold. Delete "
-      + "them once the chain is finished - continuing from a clip afterwards "
-      + "falls back to the normal guide.");
-    ltxt.append(ldesc);
-    const bDel = el("button", "gcast-btn ghost", "Delete latents\u2026");
-    bDel.style.marginTop = "6px";
-    ltxt.append(bDel);
-    lrow.append(ltxt);
+    const lrow = el("div", "gcast-set-row line");
+    lrow.append(el("div", "t", "Project latents"));
+    lrow.title = "Each render saves a small .h3latent (~5 MB) next to its video for "
+      + "latent hold. Delete them once the chain is finished - continuing from a "
+      + "clip afterwards falls back to the normal guide.";
+    const bDel = el("button", "gcast-btn ghost small", "Delete\u2026");
+    lrow.append(bDel);
+    /* results show on the button for a few seconds - no extra line */
+    const ldesc = { set textContent(t) {
+      bDel.textContent = t; bDel.title = t;
+      setTimeout(() => { if (bDel.isConnected) bDel.textContent = "Delete\u2026"; }, 4000);
+    } };
     const picks = () => {
       const p = proj();
       return (p && Array.isArray(p.shots) ? p.shots : [])
@@ -7159,22 +7192,21 @@ function buildUI(node) {
     };
     bDel.onclick = async (e) => {
       e.stopPropagation();
-      if (!picks().length) { ldesc.textContent = "No renders recorded in this project yet."; return; }
+      if (!picks().length) { ldesc.textContent = "No renders yet"; return; }
       bDel.disabled = true;
       try {
         const scan = await ask(false);
-        if (!scan.count) { ldesc.textContent = "No latent files found for this project."; return; }
+        if (!scan.count) { ldesc.textContent = "None found"; return; }
         const mb = (scan.bytes / 1048576).toFixed(0);
         if (!confirm(`Delete ${scan.count} latent file${scan.count === 1 ? "" : "s"} `
                    + `(${mb} MB) from this project's render folders?\n\n`
                    + "Videos are not touched. Continuing from these clips later "
                    + "will use the normal guide instead of latent hold.")) return;
         const done = await ask(true);
-        ldesc.textContent = `Deleted ${done.deleted} file${done.deleted === 1 ? "" : "s"} (${mb} MB)`
-          + (done.failed ? `, ${done.failed} could not be removed - see the console.` : ".");
+        ldesc.textContent = `Deleted ${done.deleted} (${mb} MB)` + (done.failed ? ` \u00b7 ${done.failed} failed` : "");
       } catch (err) {
         console.error("[H3 Studio] latent cleanup failed:", err);
-        ldesc.textContent = "Could not reach the server - see the console.";
+        ldesc.textContent = "Error - see console";
       } finally {
         bDel.disabled = false;
       }
@@ -7312,11 +7344,12 @@ function buildUI(node) {
     while (covered < total - 1 / FPS) {
       const rem = total - covered;
       let f = F;
-      if ((F - SONG_OVERLAP) / FPS > rem) {
-        f = Math.max(39, alignFrames(Math.ceil(rem * FPS) + SONG_OVERLAP));
+      const ov = overlapFrames();
+      if ((F - ov) / FPS > rem) {
+        f = Math.max(39, alignFrames(Math.ceil(rem * FPS) + ov));
       }
       lens.push(f);
-      covered += (f - SONG_OVERLAP) / FPS;
+      covered += (f - ov) / FPS;
     }
     return lens;
   }

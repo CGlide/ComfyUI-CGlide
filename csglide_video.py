@@ -158,6 +158,12 @@ def _next_path(directory, prefix, ext):
 
 LATENT_SIDECAR = ".h3latent"
 
+# Only the TAIL is kept: latent hold reads nothing else. 12 latent frames is
+# the longest overlap H3 Studio offers (39 pictures); 72 audio latent frames
+# covers its sound (65 at 40/s) with a little margin. ~5 MB instead of ~30.
+SIDECAR_VIDEO_TAIL = 12
+SIDECAR_AUDIO_TAIL = 72
+
 
 def _save_latent_sidecar(latent, video_path):
     """Write the sampled H3 latent beside the video it decodes to.
@@ -189,13 +195,16 @@ def _save_latent_sidecar(latent, video_path):
             print("[Glide Video] latent is not an H3 audio+video latent - "
                   "no sidecar written")
             return None
-        tensors = {"video": parts[0].detach().float().cpu().contiguous()}
+        v_full = parts[0]
+        tensors = {"video": v_full[:, :, -SIDECAR_VIDEO_TAIL:].detach().float().cpu().contiguous()}
         if len(parts) > 1 and parts[1] is not None:
-            tensors["audio"] = parts[1].detach().float().cpu().contiguous()
+            a_full = parts[1]
+            tensors["audio"] = a_full[..., -SIDECAR_AUDIO_TAIL:].detach().float().cpu().contiguous()
         path = os.path.splitext(video_path)[0] + LATENT_SIDECAR
-        save_file(tensors, path, metadata={"format": "cglide-h3latent-1"})
+        save_file(tensors, path, metadata={"format": "cglide-h3latent-2-tail",
+                                           "source_latent_frames": str(int(v_full.shape[2]))})
         v = tensors["video"]
-        print("[Glide Video] latent sidecar -> %s  (video %s%s)"
+        print("[Glide Video] latent sidecar (tail) -> %s  (video %s%s)"
               % (os.path.basename(path), tuple(v.shape),
                  ", audio %s" % (tuple(tensors["audio"].shape),) if "audio" in tensors else ""))
         return path

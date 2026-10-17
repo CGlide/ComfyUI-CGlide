@@ -1,7 +1,7 @@
 [project]
 name = "cglide"
 description = "H3 Studio and friends — MiniMax H3 prompt building, animated sampling preview, video encoding, clip joining and DLSS 5 preview"
-version = "1.4.2"
+version = "1.4.3"
 license = { file = "LICENSE" }
 
 [project.urls]
