@@ -969,7 +969,26 @@ const CSS = `
 .gcast-ldot.l1 { background:var(--gc-l1); } .gcast-ldot.l2 { background:var(--gc-l2); }
 .gcast-ldot.l3 { background:var(--gc-l3); }
 .gcast-lane { position:relative; background:var(--h3-panel); border:1px solid var(--h3-line);
-  border-radius:7px; padding:3px 6px 6px; user-select:none; }
+  border-radius:7px; padding:3px 6px 6px; user-select:none;
+  display:flex; align-items:center; gap:7px; }
+/* ruler + bed; the play button sits beside it, so nothing gets taller */
+.gcast-lane .lbody { position:relative; flex:1 1 auto; min-width:0; }
+.gcast-lane.drop { border-color:var(--h3-accent); background:var(--h3-accent-dim); }
+.gcast-lplay { all:unset; box-sizing:border-box; flex:0 0 auto; width:24px; height:24px;
+  border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer;
+  color:var(--h3-accent); border:1px solid var(--h3-accent); background:var(--h3-accent-dim); }
+.gcast-lplay:hover { background:color-mix(in srgb, var(--h3-accent) 30%, #1a1a1a); }
+.gcast-lplay.busy { opacity:.55; cursor:progress; }
+.gcast-lplay svg { display:block; }
+/* the ruler is the scrub bar: click or drag anywhere on it */
+.gcast-lane .ruler.scrub { cursor:ew-resize; }
+.gcast-lane .ruler.scrub:hover { background:#ffffff08; border-radius:3px; }
+.gcast-lane .lhead { position:absolute; top:0; bottom:0; width:0; border-left:2px solid #ff3b3b;
+  margin-left:-1px; pointer-events:none; z-index:4; box-shadow:0 0 4px #ff3b3b88; }
+.gcast-lane .lhead::before { content:""; position:absolute; top:0; left:-5px; border:4px solid transparent;
+  border-top:6px solid #ff3b3b; border-bottom:0; }
+.gcast-lane .lhead.idle { border-left-color:#ff3b3bb0; box-shadow:none; }
+.gcast-lane .lhead.idle::before { border-top-color:#ff3b3bb0; }
 .gcast-lane .ruler { position:relative; height:12px; }
 .gcast-lane .tk { position:absolute; top:6px; bottom:0; border-left:1px solid #3a3a3a; }
 .gcast-lane .tk span { position:absolute; top:-7px; left:3px; font:9px ui-monospace,Consolas,monospace;
@@ -1428,6 +1447,8 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 .gcast-shots-foot .songfile { max-width:190px; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; }
 .gcast-shots-foot.song .gcast-chk { font-size:10px; gap:4px; }
+.gcast-btn.songrm { white-space:nowrap; font-size:10.5px; padding:3px 8px; }
+.gcast-btn.songrm:hover { color:#ff6b6b; border-color:#ff6b6b; }
 .gcast-songnum { width:52px; background:#191919; color:#ccc; border:1px solid #333;
   border-radius:4px; font-size:10px; padding:2px 4px; font-family:ui-monospace,Consolas,monospace; }
 .gcast-songnum:focus { outline:none; border-color:var(--h3-accent); }
@@ -2034,10 +2055,62 @@ function buildUI(node) {
   const audLane = el("div", "gcast-lane");
   const audGrid = el("div", "gcast-grid med");
   audWrap.append(audHead, audLane, audGrid);
+
+  /* Drop an audio file straight on the lane: it goes into the first empty
+     audio slot, placed where it was released, trimmed to the room left in the
+     clip. Switches to Timeline if the slots were references - dropping on
+     the clip's own time only means one thing. */
+  audLane.addEventListener("dragover", (e) => {
+    const k = dragKind(e);
+    if (k === null) return;
+    e.preventDefault(); e.stopPropagation();
+    audLane.classList.toggle("drop", k === "" || k === "audio");
+  });
+  audLane.addEventListener("dragleave", (e) => {
+    if (!audLane.contains(e.relatedTarget)) audLane.classList.remove("drop");
+  });
+  audLane.addEventListener("drop", async (e) => {
+    const k = dragKind(e);
+    if (k === null) return;
+    e.preventDefault(); e.stopPropagation();
+    audLane.classList.remove("drop");
+    const f = Array.from(e.dataTransfer?.files || [])[0];
+    if (!f) return;
+    if (fileKind(f) && fileKind(f) !== "audio") { flashWrong(audLane); return; }
+    const slot = st.slots.audios.find((sl) => !sl.file);
+    if (!slot) {
+      console.warn("[H3 Studio] the three audio slots are full - clear one to drop another");
+      flashWrong(audLane);
+      return;
+    }
+    const clipSecs = alignFrames(st.length) / FPS;
+    const bed = audLane.querySelector(".bed");
+    let at = 0;
+    if (bed) {
+      const r = bed.getBoundingClientRect();
+      at = ((e.clientX - r.left) / Math.max(1, r.width)) * clipSecs;
+    }
+    at = snapF(Math.min(Math.max(0, at), Math.max(0, clipSecs - 1 / FPS)));
+    try {
+      const name = await uploadFile(f);
+      clearSlot(slot);
+      slot.file = name;
+      const d = await probeDuration(viewURL(name), false);
+      slot.dur = d; slot.start = 0; slot.end = d; slot.at = at;
+      if (st.mode !== "fl2va") st.audio_mode = "timeline";
+      fitPlaced(slot);
+      render(); commit();
+    } catch (err) {
+      console.error("[H3 Studio] could not place the dropped audio:", err);
+      flashWrong(audLane);
+    }
+  });
   const setAudioMode = (m) => (e) => {
     e.stopPropagation();
     if (st.audio_mode === m) return;
     st.audio_mode = m;
+    /* going to the timeline: long audios already loaded fit the clip too */
+    if (m === "timeline") st.slots.audios.forEach(fitPlaced);
     render(); commit();
   };
   btnARef.onclick = setAudioMode("ref");
@@ -2344,6 +2417,20 @@ function buildUI(node) {
     });
   }
 
+  /* A placed audio longer than the room left in the clip is trimmed to fit,
+     so its block's right edge sits on the clip's end instead of running past
+     it: dragging that edge then shortens it visibly from the first pixel.
+     Only on the timeline - a reference audio keeps its whole length. */
+  function fitPlaced(slot) {
+    if (!audioPlaced(st) || st.slots.audios.indexOf(slot) < 0 || !(slot.dur > 0)) return;
+    const clipSecs = alignFrames(st.length) / FPS;
+    const room = Math.max(1 / FPS, clipSecs - Math.max(0, +slot.at || 0));
+    const start = Math.max(0, +slot.start || 0);
+    if ((+slot.end || slot.dur) - start > room + 1e-3) {
+      slot.end = Math.min(slot.dur, snapF(start + room));
+    }
+  }
+
   async function assign(slot, file, kind, token) {
     const name = await uploadFile(file);
     clearSlot(slot);
@@ -2352,6 +2439,7 @@ function buildUI(node) {
       const d = await probeDuration(viewURL(name), kind === "video");
       slot.dur = d; slot.start = 0; slot.end = d;
       if (kind === "video") slot.audio = true;
+      fitPlaced(slot);
     }
     render(); commit();
     /* Dropped or picked clips skip the adopt route entirely, so they arrive
@@ -3337,6 +3425,208 @@ function buildUI(node) {
      snaps to frames. The song, when there is one, runs underneath as a bar. */
   let laneDrag = false;
 
+  /* ---- lane transport --------------------------------------------------
+   * Plays what THIS clip will hold: its window of the project song, with the
+   * placed timeline audio written over it where they overlap - the song ducks
+   * to (1 - hold) under each block, the same blend Glide Join splices. Gaps
+   * with no song are silent here; that is where H3 makes its own sound.
+   *
+   * The ruler doubles as the scrub bar. Click or drag it to move the head;
+   * play starts from the head, and when the clip ends the head goes back to
+   * where you pressed play, so a section can be auditioned over and over.
+   */
+  const laneBufs = new Map();               /* file -> Promise<AudioBuffer|null> */
+  let laneCtx = null;
+  const lanePlay = { on: false, busy: false, head: 0, from: 0, t0: 0, end: 0, nodes: [],
+                     raf: 0, gen: 0, sig: "", clip: null, btn: null, headEl: null };
+
+  function laneAudioCtx() {
+    if (!laneCtx) {
+      const C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return null;
+      laneCtx = new C();
+    }
+    return laneCtx;
+  }
+  function laneBuf(file) {
+    if (laneBufs.has(file)) return laneBufs.get(file);
+    /* a decoded song is big (about 90 MB for four minutes): keep the last few */
+    if (laneBufs.size >= 6) laneBufs.delete(laneBufs.keys().next().value);
+    const job = (async () => {
+      try {
+        const ctx = laneAudioCtx();
+        if (!ctx) return null;
+        const raw = await (await fetch(viewURL(file))).arrayBuffer();
+        return await ctx.decodeAudioData(raw);
+      } catch (e) {
+        console.warn("[H3 Studio] lane playback: could not decode", file, e);
+        return null;
+      }
+    })();
+    laneBufs.set(file, job);
+    return job;
+  }
+
+  function laneMix() {
+    const clipSecs = alignFrames(st.length) / FPS;
+    const placed = audioPlaced(st)
+      ? st.slots.audios.filter((sl) => sl.file && sl.dur)
+          .map((sl) => ({ file: sl.file, q: placeOf(sl, clipSecs) }))
+          .filter((x) => x.q.at < clipSecs && x.q.eff > 0)
+      : [];
+    return { clipSecs, song: songMeta(), placed };
+  }
+  const laneSig = (m) => JSON.stringify([m.clipSecs, m.song && [m.song.file, m.song.start],
+    m.placed.map((x) => [x.file, x.q.at, x.q.start, x.q.eff, x.q.hold])]);
+  const laneClipKey = () => { const c = clipMeta(); return c ? `${c.project}#${c.index}` : "-"; };
+
+  const laneNow = () => {
+    if (!lanePlay.on || lanePlay.busy || !laneCtx) return lanePlay.head;
+    return Math.min(lanePlay.end, lanePlay.from + Math.max(0, laneCtx.currentTime - lanePlay.t0));
+  };
+
+  const PLAY_ICON = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">'
+    + '<path fill="currentColor" d="M3 1.6v8.8L10.4 6z"/></svg>';
+  const PAUSE_ICON = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">'
+    + '<path fill="currentColor" d="M2.5 1.6h2.6v8.8H2.5zM6.9 1.6h2.6v8.8H6.9z"/></svg>';
+
+  function paintTransport() {
+    const b = lanePlay.btn;
+    if (b) {
+      b.innerHTML = lanePlay.on ? PAUSE_ICON : PLAY_ICON;
+      b.classList.toggle("busy", lanePlay.busy);
+      b.title = (lanePlay.on ? "Pause" : "Play this clip's audio")
+        + ` — head at ${fmtSecs(laneNow())}. Drag the ruler to move it.`;
+    }
+    placeLaneHead();
+  }
+  function placeLaneHead() {
+    const h = lanePlay.headEl;
+    if (!h) return;
+    const end = alignFrames(st.length) / FPS;
+    h.style.left = (Math.min(1, Math.max(0, laneNow() / end)) * 100) + "%";
+    h.classList.toggle("idle", !lanePlay.on);
+  }
+
+  function laneStop(keepHead) {
+    if (lanePlay.on && !lanePlay.busy && keepHead) lanePlay.head = laneNow();
+    lanePlay.gen++;
+    lanePlay.nodes.forEach((n) => {
+      try { if (n.stop) n.stop(); } catch (_) {}
+      try { n.disconnect(); } catch (_) {}
+    });
+    lanePlay.nodes = [];
+    if (lanePlay.raf) cancelAnimationFrame(lanePlay.raf);
+    lanePlay.raf = 0;
+    lanePlay.on = false; lanePlay.busy = false;
+    paintTransport();
+  }
+
+  async function laneStart(from) {
+    laneStop(false);
+    const m = laneMix();
+    if (!m.song && !m.placed.length) return;
+    const ctx = laneAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") { try { await ctx.resume(); } catch (_) {} }
+    if (!(from >= 0) || from >= m.clipSecs - 0.02) from = 0;
+    const gen = ++lanePlay.gen;
+    lanePlay.on = true; lanePlay.busy = true; lanePlay.head = from;
+    paintTransport();
+
+    const bufs = new Map();
+    const files = [...new Set([m.song && m.song.file, ...m.placed.map((x) => x.file)].filter(Boolean))];
+    await Promise.all(files.map(async (f) => bufs.set(f, await laneBuf(f))));
+    if (gen !== lanePlay.gen) return;              /* stopped or restarted meanwhile */
+
+    const t0 = ctx.currentTime + 0.06;
+    const nodes = [];
+    const master = ctx.createGain();
+    master.connect(ctx.destination);
+    nodes.push(master);
+    const play = (buf, when, offset, dur, out) => {
+      if (!buf || dur <= 0.005 || offset >= buf.duration) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(out);
+      src.start(when, Math.max(0, offset), Math.min(dur, buf.duration - offset));
+      nodes.push(src);
+    };
+
+    if (m.song) {
+      const g = ctx.createGain();
+      g.connect(master);
+      nodes.push(g);
+      g.gain.setValueAtTime(1, t0);
+      /* the placed audio is written over the song: duck it under each block */
+      m.placed.map((x) => [x.q.at - from, x.q.at - from + x.q.eff, 1 - x.q.hold])
+        .filter(([, b]) => b > 0)
+        .sort((u, v) => u[0] - v[0])
+        .forEach(([a, b, lvl]) => {
+          const ta = t0 + Math.max(0, a), tb = t0 + b;
+          if (a > 0.012) {
+            g.gain.setValueAtTime(1, ta - 0.012);
+            g.gain.linearRampToValueAtTime(lvl, ta);
+          } else {
+            g.gain.setValueAtTime(lvl, ta);
+          }
+          g.gain.setValueAtTime(lvl, tb);
+          g.gain.linearRampToValueAtTime(1, tb + 0.012);
+        });
+      play(bufs.get(m.song.file), t0, m.song.start + from, m.clipSecs - from, g);
+    }
+    m.placed.forEach((x) => {
+      const a = x.q.at - from;
+      const skip = Math.max(0, -a);
+      play(bufs.get(x.file), t0 + Math.max(0, a), x.q.start + skip, x.q.eff - skip, master);
+    });
+
+    Object.assign(lanePlay, { busy: false, nodes, t0, from, end: m.clipSecs, sig: laneSig(m) });
+    const tick = () => {
+      if (gen !== lanePlay.gen) return;
+      if (laneNow() >= lanePlay.end - 1e-3) {
+        const back = lanePlay.from;
+        laneStop(false);
+        lanePlay.head = back;                      /* back to where play was pressed */
+        paintTransport();
+        return;
+      }
+      placeLaneHead();
+      lanePlay.raf = requestAnimationFrame(tick);
+    };
+    paintTransport();
+    lanePlay.raf = requestAnimationFrame(tick);
+  }
+
+  function wireLaneScrub(ruler) {
+    ruler.classList.add("scrub");
+    ruler.title = "Click or drag to move the play head";
+    ruler.addEventListener("pointerdown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const was = lanePlay.on;
+      if (was) laneStop(true);
+      const end = alignFrames(st.length) / FPS;
+      const set = (x) => {
+        const r = ruler.getBoundingClientRect();
+        const t = ((x - r.left) / Math.max(1, r.width)) * end;
+        lanePlay.head = Math.round(Math.min(end, Math.max(0, t)) * FPS) / FPS;
+        paintTransport();
+      };
+      set(e.clientX);
+      try { ruler.setPointerCapture(e.pointerId); } catch (_) {}
+      const move = (ev) => { ev.preventDefault(); ev.stopPropagation(); set(ev.clientX); };
+      const up = () => {
+        ruler.removeEventListener("pointermove", move);
+        ruler.removeEventListener("pointerup", up);
+        ruler.removeEventListener("pointercancel", up);
+        if (was) laneStart(lanePlay.head);
+      };
+      ruler.addEventListener("pointermove", move);
+      ruler.addEventListener("pointerup", up);
+      ruler.addEventListener("pointercancel", up);
+    });
+  }
+
   function paintLane() {
     if (laneDrag) return;                 /* never rebuild under a drag */
     const placed = audioPlaced(st);
@@ -3345,7 +3635,11 @@ function buildUI(node) {
     audLane.replaceChildren();
     const show = placed || !!sm;
     audLane.style.display = show ? "" : "none";
-    if (!show) return;
+    lanePlay.btn = null; lanePlay.headEl = null;
+    /* another clip on screen: its audio is not what was playing */
+    const key = laneClipKey();
+    if (lanePlay.clip !== key) { laneStop(false); lanePlay.head = 0; lanePlay.clip = key; }
+    if (!show) { laneStop(false); return; }
 
     const ruler = el("div", "ruler");
     const step = clipSecs > 12 ? 2 : 1;
@@ -3356,7 +3650,25 @@ function buildUI(node) {
       ruler.append(tk);
     }
     const bed = el("div", "bed");
-    audLane.append(ruler, bed);
+    const body = el("div", "lbody");
+    const headEl = el("div", "lhead");
+    body.append(ruler, bed, headEl);
+    const bPlay = el("button", "gcast-lplay");
+    bPlay.onpointerdown = (e) => e.stopPropagation();
+    bPlay.onclick = (e) => {
+      e.stopPropagation();
+      if (lanePlay.on) laneStop(true); else laneStart(lanePlay.head);
+    };
+    audLane.append(bPlay, body);
+    wireLaneScrub(ruler);
+    lanePlay.btn = bPlay; lanePlay.headEl = headEl;
+    lanePlay.head = Math.min(lanePlay.head, clipSecs);
+    /* edited while playing (a block moved, the length changed): carry on from
+       the same moment with the new mix */
+    if (lanePlay.on && !lanePlay.busy && laneSig(laneMix()) !== lanePlay.sig) {
+      laneStart(laneNow());
+    }
+    paintTransport();
 
     if (sm) {
       const sb = el("div", "song");
@@ -3422,7 +3734,9 @@ function buildUI(node) {
         e.preventDefault(); e.stopPropagation();
         const q = placeOf(slot, clipSecs);
         const t0 = timeAt(e.clientX);
-        const s0 = { at: q.at, start: q.start, end: q.end, dur: q.dur };
+        /* the visible end: an old over-long trim would otherwise have to be
+           dragged back across all its hidden length before the block moved */
+        const s0 = { at: q.at, start: q.start, end: Math.min(q.end, q.start + q.eff), dur: q.dur };
         laneDrag = true;
         b.classList.add("drag");
         try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
@@ -7121,7 +7435,8 @@ function buildUI(node) {
         + "rework the sound slightly so picture and sound sit together better.",
         (v) => { sg.strength = v; });
 
-      const bX = el("button", "gcast-btn ghost", "×");
+      /* spelled out, not just a cross: it is the only way to drop the song */
+      const bX = el("button", "gcast-btn ghost songrm", "× Remove song");
       bX.title = "Remove the song from the project";
       bX.disabled = !!run;
       bX.onclick = (e) => { e.stopPropagation(); clearSong(); };
@@ -8099,6 +8414,7 @@ function buildUI(node) {
     root,
     tryResume,
     destroy() {
+      try { laneStop(false); } catch (e) { /* never block removal */ }
       ac.remove();
       try { api.removeEventListener("execution_success", onPromptDone); } catch (e) { /* older api */ }
       /* a window listener per node instance would outlive the node */
@@ -8125,7 +8441,7 @@ function buildUI(node) {
 /* Printed once on load: which build of this file the browser is running.
    Browsers cache extension scripts hard, so "I updated it and nothing
    changed" is answered by this line before anything else. */
-const H3_BUILD = "2026-10-13 interlaced-mark";
+const H3_BUILD = "1.4.2 \u00b7 2026-10-17";
 console.log(`[H3 Studio] build ${H3_BUILD}`);
 
 app.registerExtension({
