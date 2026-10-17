@@ -164,6 +164,52 @@ LATENT_SIDECAR = ".h3latent"
 SIDECAR_VIDEO_TAIL = 12
 SIDECAR_AUDIO_TAIL = 72
 
+# The WHOLE latent, for upscaling a take later with Glide Latent Load. Its own
+# extension on purpose: "Delete latents" in H3 Studio only removes .h3latent
+# (the chaining tails), so a full latent kept for an upscale is never swept.
+FULL_SIDECAR = ".h3full"
+SAVE_LATENT_CHOICES = ["tail", "full", "off"]
+
+
+def _latent_parts(latent):
+    samples = latent.get("samples") if isinstance(latent, dict) else None
+    if samples is None:
+        return None
+    if hasattr(samples, "unbind"):
+        parts = samples.unbind()
+    elif hasattr(samples, "tensors"):
+        parts = samples.tensors
+    else:
+        parts = (samples,)
+    if len(parts) < 1 or parts[0].dim() != 5:
+        return None
+    return parts
+
+
+def _save_full_latent(latent, video_path):
+    """The whole sampled latent beside the video, as <name>.h3full."""
+    if latent is None:
+        return None
+    try:
+        from safetensors.torch import save_file
+        parts = _latent_parts(latent)
+        if parts is None:
+            print("[Glide Video] latent is not an H3 audio+video latent - "
+                  "no full latent written")
+            return None
+        tensors = {"video": parts[0].detach().float().cpu().contiguous()}
+        if len(parts) > 1 and parts[1] is not None:
+            tensors["audio"] = parts[1].detach().float().cpu().contiguous()
+        path = os.path.splitext(video_path)[0] + FULL_SIDECAR
+        save_file(tensors, path, metadata={"format": "cglide-h3full-1",
+                                           "video": os.path.basename(video_path)})
+        print("[Glide Video] full latent -> %s  (%.1f MB)"
+              % (os.path.basename(path), os.path.getsize(path) / 1048576.0))
+        return path
+    except Exception as e:
+        print("[Glide Video] could not write the full latent (%s)" % e)
+        return None
+
 
 def _save_latent_sidecar(latent, video_path):
     """Write the sampled H3 latent beside the video it decodes to.
@@ -492,6 +538,18 @@ class CSGlideVideo:
                     "default": "auto",
                     "tooltip": container_tip,
                 }),
+                # Appended last for the same reason as container.
+                "save_latent": (SAVE_LATENT_CHOICES, {
+                    "default": "tail",
+                    "tooltip": "Only used when the latent input is wired.\n"
+                               "tail -- <name>.h3latent, ~5 MB: what H3 Studio "
+                               "needs to continue a linked clip (latent hold).\n"
+                               "full -- also <name>.h3full, the whole latent "
+                               "(~30 MB), to upscale this take later with "
+                               "Glide Latent Load. Delete latents never removes "
+                               "these.\n"
+                               "off -- nothing saved.",
+                }),
             },
             "optional": {
                 "audio": ("AUDIO", {
@@ -532,7 +590,7 @@ class CSGlideVideo:
     def combine(self, images, fps, preset, filename_prefix,
                 save_output=True, save_metadata=True, fallback_on_failure=True,
                 container="auto", audio=None, chain=None, prompt=None,
-                extra_pnginfo=None, latent=None):
+                extra_pnginfo=None, latent=None, save_latent="tail"):
         banner()          # names the ffmpeg in use, once per session
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
@@ -710,7 +768,10 @@ class CSGlideVideo:
                     except OSError:
                         pass
 
-        _save_latent_sidecar(latent, result["out_path"])
+        if latent is not None and save_latent != "off":
+            _save_latent_sidecar(latent, result["out_path"])
+            if save_latent == "full":
+                _save_full_latent(latent, result["out_path"])
 
         # -- UI payload --------------------------------------------------
         ui_name = result["preview_name"] or result["filename"]

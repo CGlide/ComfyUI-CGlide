@@ -5,6 +5,7 @@ from .csglide_cast import CSGlideCast
 from .csglide_preview import CSGlidePreview
 from .csglide_join import CSGlideJoin
 from .csglide_audiolock import CSGlideAudioLock
+from .csglide_latent import CSGlideLatentLoad
 from .csglide_dlss5 import CSGlideDLSS5, CSGlideDLSS5Batch, CSGlideDLSS5Legacy
 
 # Routes only, no node class: importing it registers /cglide/recent_outputs and
@@ -19,6 +20,7 @@ NODE_CLASS_MAPPINGS = {
     "CSGlidePreviewCS": CSGlidePreview,
     "CSGlideJoinCS": CSGlideJoin,
     "CSGlideAudioLockCS": CSGlideAudioLock,
+    "CSGlideLatentLoadCS": CSGlideLatentLoad,
     "CSGlideDLSS5CS": CSGlideDLSS5,
     "CSGlideDLSS5BatchCS": CSGlideDLSS5Batch,
     # The id the standalone ComfyUI-Glide-DLSS5 folder used, so workflows
@@ -34,6 +36,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CSGlidePreviewCS": "Glide Preview",
     "CSGlideJoinCS": "Glide Join",
     "CSGlideAudioLockCS": "Glide Audio Lock",
+    "CSGlideLatentLoadCS": "Glide Latent Load",
     "CSGlideDLSS5CS": "Glide DLSS5",
     "CSGlideDLSS5BatchCS": "Glide DLSS5 Batch",
     "CSGlideDLSS5": "Glide DLSS5 (old)",
