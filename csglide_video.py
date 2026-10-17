@@ -156,6 +156,54 @@ def _next_path(directory, prefix, ext):
     return os.path.join(target, filename), filename, subdir
 
 
+LATENT_SIDECAR = ".h3latent"
+
+
+def _save_latent_sidecar(latent, video_path):
+    """Write the sampled H3 latent beside the video it decodes to.
+
+    H3 Studio's CONTINUE FROM can then hold the TAIL OF THIS LATENT in the
+    head of the next clip (latent hold) instead of re-encoding decoded
+    frames - no VAE round trip, no chroma or 8-bit loss at the seam.
+
+    Saved next to the master as <name>.h3latent (a safetensors file holding
+    "video" and "audio"), so anything that knows where the clip went also
+    knows where its latent is. Wire the FIRST sampler's output: a refine pass
+    on an upscaled latent has a different size and cannot be held at the
+    canvas.
+    """
+    if latent is None:
+        return None
+    try:
+        from safetensors.torch import save_file
+        samples = latent.get("samples") if isinstance(latent, dict) else None
+        if samples is None:
+            return None
+        if hasattr(samples, "unbind"):
+            parts = samples.unbind()
+        elif hasattr(samples, "tensors"):
+            parts = samples.tensors
+        else:
+            parts = (samples,)
+        if len(parts) < 1 or parts[0].dim() != 5:
+            print("[Glide Video] latent is not an H3 audio+video latent - "
+                  "no sidecar written")
+            return None
+        tensors = {"video": parts[0].detach().float().cpu().contiguous()}
+        if len(parts) > 1 and parts[1] is not None:
+            tensors["audio"] = parts[1].detach().float().cpu().contiguous()
+        path = os.path.splitext(video_path)[0] + LATENT_SIDECAR
+        save_file(tensors, path, metadata={"format": "cglide-h3latent-1"})
+        v = tensors["video"]
+        print("[Glide Video] latent sidecar -> %s  (video %s%s)"
+              % (os.path.basename(path), tuple(v.shape),
+                 ", audio %s" % (tuple(tensors["audio"].shape),) if "audio" in tensors else ""))
+        return path
+    except Exception as e:
+        print("[Glide Video] could not write the latent sidecar (%s)" % e)
+        return None
+
+
 def _free_space_mb(path):
     """Free megabytes on the volume holding path, or None if unknown."""
     try:
@@ -441,6 +489,12 @@ class CSGlideVideo:
                     "tooltip": "From VAEDecodeAudio. Muxed in the same pass, "
                                "so there is no second file.",
                 }),
+                "latent": ("LATENT", {
+                    "tooltip": "Optional: the FIRST sampler's output. Saved next "
+                               "to the video as <name>.h3latent so H3 Studio's "
+                               "CONTINUE FROM can hold it exactly (latent hold) "
+                               "instead of re-encoding decoded frames.",
+                }),
                 "chain": ("STRING", {
                     "forceInput": True,
                     "tooltip": "The chain note out of Glide Join. Wire it and a "
@@ -469,7 +523,7 @@ class CSGlideVideo:
     def combine(self, images, fps, preset, filename_prefix,
                 save_output=True, save_metadata=True, fallback_on_failure=True,
                 container="auto", audio=None, chain=None, prompt=None,
-                extra_pnginfo=None):
+                extra_pnginfo=None, latent=None):
         banner()          # names the ffmpeg in use, once per session
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
@@ -646,6 +700,8 @@ class CSGlideVideo:
                         os.remove(tmp)
                     except OSError:
                         pass
+
+        _save_latent_sidecar(latent, result["out_path"])
 
         # -- UI payload --------------------------------------------------
         ui_name = result["preview_name"] or result["filename"]

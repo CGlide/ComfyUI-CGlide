@@ -269,7 +269,13 @@ function parseInitial(raw) {
     if (Number.isFinite(+c.end)) out.cont.end = +c.end;
     if (Number.isFinite(+c.dur)) out.cont.dur = +c.dur;
     if (c.audio) out.cont.audio = true;
-    if (c.flatten) out.cont.flatten = true;
+    /* Where the adopted clip was rendered - read by Python only to find the
+       .h3latent Glide Video wrote beside it (latent hold). */
+    if (c.origin && typeof c.origin === "object" && typeof c.origin.name === "string") {
+      out.cont.origin = { name: String(c.origin.name),
+                          subfolder: String(c.origin.subfolder || ""),
+                          type: c.origin.type === "temp" ? "temp" : "output" };
+    }
     /* UI-only, and dropped by the Python whitelist: what the guide's chroma is,
        so the 4:2:0 note survives a reload instead of vanishing until the file
        is re-adopted. */
@@ -1732,13 +1738,21 @@ function buildUI(node) {
     };
   };
 
+  /* Latent hold is the DEFAULT (tested 2026-10-17: six links, brightness,
+     contrast, saturation and detail flat where the pixel guide went 14%
+     duller and 55% crunchier). Only an explicit untick turns it off. */
+  const latentHoldOn = () => node.properties.gcast_cont_latent !== false;
+
   const commit = () => {
     if (!dataWidget) dataWidget = node.widgets?.find((w) => w.name === "h3_data");
     /* The clip identity rides along in the widget value only. parseInitial
        whitelists on the way back in, so it is dropped on reload rather than
        becoming part of the state. */
     if (dataWidget) dataWidget.value = JSON.stringify(Object.assign({}, st,
-      { clip: clipMeta(), song: songMeta() }));
+      { clip: clipMeta(), song: songMeta(),
+        /* node-level, like "+ look": Render all clears and refills CONTINUE
+           FROM on every link, so a flag kept in the slot would not survive */
+        cont_latent: latentHoldOn() }));
     node.setDirtyCanvas(true, true);
   };
 
@@ -2445,6 +2459,10 @@ function buildUI(node) {
     const name = d.subfolder ? `${d.subfolder}/${d.name}` : d.name;
     clearSlot(slot);
     slot.file = name;
+    /* Remember the render this copy came from, so the node can find the
+       latent Glide Video saved next to it. */
+    slot.origin = { name: String(pick.name || ""), subfolder: String(pick.subfolder || ""),
+                    type: pick.type === "temp" ? "temp" : "output" };
     /* Ask the browser first; fall back to the server's reading. The browser
        reports 0 for anything it cannot decode, and HEVC 4:4:4 in Matroska --
        what the high-fidelity preset writes -- is exactly that case. Without a
@@ -3556,20 +3574,23 @@ function buildUI(node) {
       card.append(lab);
     }
 
-    /* Levelling the carried frames onto their own last frame, before they are
-     * encoded. Measured on his renders: the model continues from the window's
-     * AVERAGE exposure, not its final frame, so a window ending darker than
-     * its average produced a brighter clip and vice versa. Off by default -
-     * with a true tail window the drift measured near zero, so this is for the
-     * case where it does not. */
-    if (slot.file && opts.cont) {
-      const lab2 = el("label", "gcast-chk");
-      const cb2 = el("input"); cb2.type = "checkbox"; cb2.checked = !!slot.flatten;
-      cb2.onchange = () => { slot.flatten = cb2.checked; render(); commit(); };
-      lab2.append(cb2, el("span", null, "level exposure to the last frame"));
-      lab2.title = "Only if the extension comes back brighter or darker than the "
-                 + "clip it continues from";
-      card.append(lab2);
+    /* LATENT HOLD. Node-level (see commit): continue from the previous
+     * clip's saved latent instead of re-encoding its decoded tail. Needs the
+     * first sampler's LATENT wired into Glide Video, which saves it next to
+     * the video; without that file the node falls back to the guide. */
+    if (opts.cont) {
+      const lab3 = el("label", "gcast-chk");
+      const cb3 = el("input"); cb3.type = "checkbox";
+      cb3.checked = latentHoldOn();
+      cb3.onchange = () => { node.properties.gcast_cont_latent = cb3.checked; render(); commit(); };
+      lab3.append(cb3, el("span", null, "latent hold (exact seam)"));
+      lab3.onpointerdown = (e) => e.stopPropagation();
+      lab3.title = "Continue from the previous clip's own latent, held in the head "
+                 + "of this one, instead of re-encoding its decoded frames. Wire the "
+                 + "first sampler's LATENT into Glide Video so it saves a .h3latent "
+                 + "beside the clip. Falls back to the normal guide when there is "
+                 + "none. Applies to every linked clip.";
+      card.append(lab3);
     }
 
     wireDrop(body || card, slot, kind, kind === "video" ? ACCEPT_VIDEO : ACCEPT_AUDIO, token);
@@ -6790,6 +6811,61 @@ function buildUI(node) {
       commit();
     };
     setPanel.append(row);
+
+    /* Project latents. Every render with a latent wired leaves a ~30 MB
+       .h3latent beside it, and they are only needed to continue FROM that
+       clip - so once a chain is finished they are dead weight. Scans first
+       and says how much, then deletes on a confirm. The server decides which
+       files those are (see project_latents); the browser only names the
+       project's renders. */
+    const lrow = el("div", "gcast-set-row");
+    const ltxt = el("div", "txt");
+    ltxt.append(el("div", "t", "Project latents"));
+    const ldesc = el("div", "d",
+      "Each render saves a .h3latent next to its video for latent hold. Delete "
+      + "them once the chain is finished - continuing from a clip afterwards "
+      + "falls back to the normal guide.");
+    ltxt.append(ldesc);
+    const bDel = el("button", "gcast-btn ghost", "Delete latents\u2026");
+    bDel.style.marginTop = "6px";
+    ltxt.append(bDel);
+    lrow.append(ltxt);
+    const picks = () => {
+      const p = proj();
+      return (p && Array.isArray(p.shots) ? p.shots : [])
+        .map((s) => s && s.lastOut).filter((o) => o && o.name);
+    };
+    const ask = async (del) => {
+      const r = await api.fetchApi("/cglide/latents", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ picks: picks(), delete: !!del }),
+      });
+      if (r.status !== 200) throw new Error(`latents ${r.status}`);
+      return r.json();
+    };
+    bDel.onclick = async (e) => {
+      e.stopPropagation();
+      if (!picks().length) { ldesc.textContent = "No renders recorded in this project yet."; return; }
+      bDel.disabled = true;
+      try {
+        const scan = await ask(false);
+        if (!scan.count) { ldesc.textContent = "No latent files found for this project."; return; }
+        const mb = (scan.bytes / 1048576).toFixed(0);
+        if (!confirm(`Delete ${scan.count} latent file${scan.count === 1 ? "" : "s"} `
+                   + `(${mb} MB) from this project's render folders?\n\n`
+                   + "Videos are not touched. Continuing from these clips later "
+                   + "will use the normal guide instead of latent hold.")) return;
+        const done = await ask(true);
+        ldesc.textContent = `Deleted ${done.deleted} file${done.deleted === 1 ? "" : "s"} (${mb} MB)`
+          + (done.failed ? `, ${done.failed} could not be removed - see the console.` : ".");
+      } catch (err) {
+        console.error("[H3 Studio] latent cleanup failed:", err);
+        ldesc.textContent = "Could not reach the server - see the console.";
+      } finally {
+        bDel.disabled = false;
+      }
+    };
+    setPanel.append(lrow);
   }
 
   function placeSet() {
