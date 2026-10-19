@@ -781,6 +781,12 @@ const CSS = `
 .gcast-runmode { background:#191919; color:#ccc; border:1px solid #333; border-radius:4px;
   font-size:10px; padding:2px 4px; font-family:inherit; }
 .gcast-shots-foot.run .gcast-chk { font-size:10px; gap:4px; }
+/* the upscale pass is a different workflow, not an extra: warn, in orange */
+.gcast-chk.upwarn { color:#e8a758; }
+.gcast-chk.upwarn input { accent-color:#e8a758; }
+.gcast-chk.upwarn .ico { display:inline-flex; color:#e8a758; }
+.gcast-chk.upwarn.on { color:#1a1208; background:#e8a758; border-radius:4px; padding:1px 6px 1px 3px; }
+.gcast-chk.upwarn.on .ico { color:#1a1208; }
 .gcast-btn.run { border-color:var(--h3-accent); color:var(--h3-accent); }
 .gcast-btn.run:hover:not([disabled]) { background:#ff9f4318; }
 .gcast-btn.run { display:inline-flex; align-items:center; gap:5px; }
@@ -1771,6 +1777,29 @@ function buildUI(node) {
      duller and 55% crunchier). Only an explicit untick turns it off. */
   const latentHoldOn = () => node.properties.gcast_cont_latent !== false;
 
+  /* UPSCALE PASS. Off by default; switched on in the Render row of an
+     upscale workflow (H3 Studio's latent -> upscaler -> refine, no first
+     sampler). The clip is then built from its saved full latent - the .h3full
+     beside its draft render (lastOut) - and Glide Join is handed the previous
+     linked clip's UPSCALED render (lastUp), so a chain stitches at upscale
+     size. Draft and upscale are recorded apart, neither overwrites the other. */
+  const upscaleOn = () => !!node.properties.gcast_upscale;
+  const pickOf = (o) => (o && o.name)
+    ? { name: String(o.name), subfolder: String(o.subfolder || ""),
+        type: o.type === "temp" ? "temp" : "output" } : null;
+  function upscaleMeta() {
+    if (!upscaleOn()) return null;
+    const p = node.properties && node.properties.gcast_project;
+    if (!p || !Array.isArray(p.shots) || !(p.idx >= 0) || !p.shots[p.idx]) return null;
+    const sh = p.shots[p.idx];
+    const linked = p.idx > 0 && !!sh.link;
+    return {
+      src: pickOf(sh.lastOut),
+      prev: linked ? pickOf(p.shots[p.idx - 1].lastUp) : null,
+      overlap: linked ? songOverlap(p, p.idx) : 0,
+    };
+  }
+
   const commit = () => {
     if (!dataWidget) dataWidget = node.widgets?.find((w) => w.name === "h3_data");
     /* The clip identity rides along in the widget value only. parseInitial
@@ -1780,7 +1809,7 @@ function buildUI(node) {
       { clip: clipMeta(), song: songMeta(),
         /* node-level, like "+ look": Render all clears and refills CONTINUE
            FROM on every link, so a flag kept in the slot would not survive */
-        cont_latent: latentHoldOn() }));
+        cont_latent: latentHoldOn(), upscale: upscaleMeta() }));
     node.setDirtyCanvas(true, true);
   };
 
@@ -6286,8 +6315,8 @@ function buildUI(node) {
     }
     const raw = mine && mine.inputs && mine.inputs.h3_data;
     if (typeof raw !== "string") return;
-    let clip = null;
-    try { clip = JSON.parse(raw).clip; } catch (e) { return; }
+    let clip = null, isUp = false;
+    try { const d = JSON.parse(raw); clip = d.clip; isUp = !!d.upscale; } catch (e) { return; }
     if (!clip || !(clip.index >= 1)) return;
     const p = proj();
     const sh = p.shots[clip.index - 1];
@@ -6296,10 +6325,12 @@ function buildUI(node) {
     if (clip.count && clip.count !== p.shots.length) return;
     const out = videoFromHistory(entry);
     if (!out) return;
-    const was = sh.lastOut && sh.lastOut.name;
-    sh.lastOut = { name: out.name, subfolder: out.subfolder || "", type: out.type || "output" };
+    const key = isUp ? "lastUp" : "lastOut";
+    const was = sh[key] && sh[key].name;
+    sh[key] = { name: out.name, subfolder: out.subfolder || "", type: out.type || "output" };
     if (was !== out.name) {
-      console.log(`[H3 Studio] ${shotLabel(sh, clip.index - 1)} rendered \u2192 ${out.name}`
+      console.log(`[H3 Studio] ${shotLabel(sh, clip.index - 1)} `
+                + `${isUp ? "upscaled" : "rendered"} \u2192 ${out.name}`
                 + (was ? ` (was ${was})` : ""));
     }
     commit();
@@ -6418,6 +6449,38 @@ function buildUI(node) {
     const queue = scope === "clip" ? range.slice() : range.filter((i) => !p.shots[i].off);
     if (!queue.length) {
       alert("H3 Studio: every clip in that range is skipped.");
+      return;
+    }
+
+    if (upscaleOn()) {
+      /* Upscale pass: no CONTINUE FROM, no seam or look references - the
+         takes are already made. Each clip needs its draft render (whose
+         .h3full is loaded); a linked one also needs the clip before it
+         upscaled, in this run or an earlier one. */
+      const inRunU = new Set(queue);
+      const noDraft = queue.filter((i) => !p.shots[i].lastOut);
+      if (noDraft.length) {
+        alert("H3 Studio upscale pass: these clips have no draft render recorded, "
+              + "so there is no latent to upscale:\n\n"
+              + noDraft.map((i) => shotLabel(p.shots[i], i)).join(", ")
+              + "\n\nRender their drafts first (save_latent = full), or narrow the scope.");
+        return;
+      }
+      const orphanU = queue.find((i) => i > 0 && p.shots[i].link && !inRunU.has(i - 1)
+                                       && !p.shots[i - 1].lastUp);
+      if (orphanU !== undefined) {
+        const a = shotLabel(p.shots[orphanU - 1], orphanU - 1);
+        const go = confirm(`${shotLabel(p.shots[orphanU], orphanU)} is linked to ${a}, `
+          + `which has not been upscaled yet, so it will come out unjoined.\n\n`
+          + `Widen the scope to include ${a} to get the joined chain. Upscale anyway?`);
+        if (!go) return;
+      }
+      snapProject("before upscale pass");
+      await runLoop({
+        v: 1, id: uid(), t: Date.now(), scope, look: false, links: 0, queue, upscale: true,
+        skipped: range.length - queue.length, startIdx: p.idx,
+        k: 0, promptId: null, made: [],
+      }, false);
       return;
     }
 
@@ -6606,7 +6669,9 @@ function buildUI(node) {
           state.k = k; state.promptId = null; saveRun(state);
           run.note = "";
 
-          if (linked && from) {
+          if (state.upscale) {
+            /* nothing to prepare: the node loads the take's own latent */
+          } else if (linked && from) {
             run.note = "taking the tail of " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
             await raceCancel(adoptInto(st.cont, from));
             const win = tailWindow(st.cont.dur || 0, overlapFrames());
@@ -6634,7 +6699,7 @@ function buildUI(node) {
              seam and the seam reference holding the subject past it; a look
              reference from the same clip on top of those competes rather than
              helps. Unlinked clips are where it is the only thread there is. */
-          if (!linked && look && pred) {
+          if (!state.upscale && !linked && look && pred) {
             if (!from) {
               console.log(`[H3 Studio] Render: no render of ${shotLabel(pred, i - 1)} recorded, `
                         + `no look to carry into ${shotLabel(sh, i)}`);
@@ -6671,8 +6736,8 @@ function buildUI(node) {
         }
         /* Recorded on the clip, so the next link can find it from any scope,
            in this run or a later one. */
-        sh.lastOut = { name: out.name, subfolder: out.subfolder || "",
-                       type: out.type || "output" };
+        sh[state.upscale ? "lastUp" : "lastOut"] = { name: out.name,
+                       subfolder: out.subfolder || "", type: out.type || "output" };
         run.made.push(out.name);
         state.made = run.made.slice();
         state.k = k + 1; state.promptId = null;
@@ -6926,7 +6991,7 @@ function buildUI(node) {
     busy("packing project\u2026");
     try {
       const shots = clone(p.shots);
-      shots.forEach((s) => { delete s.lastOut; });  // a path on this machine only
+      shots.forEach((s) => { delete s.lastOut; delete s.lastUp; });  // paths on this machine only
       const entries = [];
       const add = makeAssetAdder(entries, new Map(), new Set());
       for (const s of shots) await packSlots(s.state.slots, add);
@@ -7049,6 +7114,7 @@ function buildUI(node) {
               subfolder: typeof s.lastOut.subfolder === "string" ? s.lastOut.subfolder : "",
               type: typeof s.lastOut.type === "string" ? s.lastOut.type : "output" }
           : null,
+        lastUp: pickOf(s && s.lastUp),
         state: parseInitial(JSON.stringify((s && s.state) || {})),
       }));
       /* A file written before links has no link fields at all, so infer them
@@ -7058,7 +7124,7 @@ function buildUI(node) {
       if (!p.song) delete p.song;
       if (!(d.meta && d.meta.links)) inferLinks(p.shots);
       if (p.shots[0]) p.shots[0].link = false;
-      p.shots.forEach((s) => { if (!s.lastOut) delete s.lastOut; });
+      p.shots.forEach((s) => { if (!s.lastOut) delete s.lastOut; if (!s.lastUp) delete s.lastUp; });
       node.properties.gcast_links = 1;
       if (remap) {
         const fix = (it) => { if (it && it.file && remap.has(it.file)) it.file = remap.get(it.file); };
@@ -7790,8 +7856,30 @@ function buildUI(node) {
     bRun.disabled = !p.shots.length || !!run;
     bRun.onclick = (e) => { e.stopPropagation(); closeShots();
                             renderAll(selScope.value, cbLook.checked); };
+    /* Orange with a warning sign on purpose: this is not "also upscale my
+       render" - it replaces generation with the saved latents, and belongs in
+       a separate upscale workflow. Ticked by mistake in the draft workflow it
+       would load old takes instead of generating new ones. */
+    const labUp = el("label", "gcast-chk upwarn");
+    const cbUp = el("input"); cbUp.type = "checkbox";
+    cbUp.checked = upscaleOn();
+    cbUp.disabled = !!run;
+    const icoUp = el("span", "ico");
+    icoUp.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">'
+      + '<path fill="currentColor" fill-rule="evenodd" d="M8 1.2 15.2 14H.8L8 1.2Z'
+      + 'M7.2 6v4.2h1.6V6H7.2Zm0 5.4v1.6h1.6v-1.6H7.2Z"/></svg>';
+    const paintUp = () => labUp.classList.toggle("on", cbUp.checked);
+    cbUp.onchange = () => { node.properties.gcast_upscale = cbUp.checked; paintUp();
+                            commit(); paintRunTitle(); };
+    labUp.append(cbUp, icoUp, el("span", null, "upscale pass"));
+    paintUp();
+    labUp.onpointerdown = (e) => e.stopPropagation();
+    labUp.title = "Upscale pass, for an upscale workflow (H3 Studio's latent \u2192 "
+      + "upscaler \u2192 refine, no first sampler). Each clip is built from the full "
+      + "latent saved with its draft (save_latent = full), and linked clips are "
+      + "joined onto the clip before's UPSCALED render. Drafts are left untouched.";
     rfoot.append(el("div", "lbl", "Scope"), el("div", "spacer"), selScope,
-                 labLook, bRun);
+                 labLook, labUp, bRun);
     shotsPanel.append(rfoot);
   }
 
@@ -8474,7 +8562,7 @@ function buildUI(node) {
 /* Printed once on load: which build of this file the browser is running.
    Browsers cache extension scripts hard, so "I updated it and nothing
    changed" is answered by this line before anything else. */
-const H3_BUILD = "1.4.2 \u00b7 2026-10-17";
+const H3_BUILD = "1.4.5 \u00b7 2026-10-18";
 console.log(`[H3 Studio] build ${H3_BUILD}`);
 
 app.registerExtension({

@@ -193,6 +193,37 @@ def _inside_dir(root, target):
 
 
 LATENT_SIDECAR = ".h3latent"
+FULL_SIDECAR = ".h3full"
+
+
+def _parse_upscale(raw):
+    if not isinstance(raw, dict):
+        return None
+    try:
+        ov = int(raw.get("overlap") or 0)
+    except Exception:
+        ov = 0
+    return {"src": _clean_origin(raw.get("src")),
+            "prev": _clean_origin(raw.get("prev")),
+            "overlap": ov if ov in (5, 22, 39) else (22 if ov > 0 else 0)}
+
+
+def _render_path(org, ext=None):
+    """A recorded render ({name, subfolder, type}) -> an absolute path inside
+    output/ or temp/, optionally with its extension swapped. None if it is
+    not there or would land outside those folders."""
+    if not org:
+        return None
+    try:
+        root = (folder_paths.get_temp_directory() if org["type"] == "temp"
+                else folder_paths.get_output_directory())
+    except Exception:
+        return None
+    name = org["name"] if ext is None else os.path.splitext(org["name"])[0] + ext
+    path = os.path.join(root, org["subfolder"], name)
+    if not _inside_dir(root, path) or not os.path.isfile(path):
+        return None
+    return os.path.realpath(path)
 
 
 def _find_latent_sidecar(cont):
@@ -700,6 +731,11 @@ def parse_h3_data(raw):
         # of a re-encoded guide. A node setting, sent at the top of h3_data
         # because Render all clears and refills `cont` on every link.
         "cont_latent": bool(data.get("cont_latent")),
+        # UPSCALE PASS: build this clip from its saved full latent (.h3full,
+        # next to its draft render) instead of an empty one, and hand Glide
+        # Join the previous clip's UPSCALED render. Sent by the panel only
+        # while the Render row's "upscale" box is on.
+        "upscale": _parse_upscale(data.get("upscale")),
         "clip": clip,
         "song": _parse_song(data.get("song")),
         "audio_mode": "timeline" if data.get("audio_mode") == "timeline" else "ref",
@@ -1063,18 +1099,18 @@ class CSGlideCast:
             },
         }
 
-    # clip_name is APPENDED, never inserted. LiteGraph stores links by output
-    # index, so a new socket next to source_video would silently rewire every
-    # saved workflow that already uses this node.
-    # locked_audio is appended for the same reason: the held sound of this clip
-    # (song window and/or timeline audio) as raw samples with a splice weight,
-    # for Glide Join's locked_audio input. Empty (zero samples) when nothing is
-    # held, which Glide Join reads as "use audio".
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "INT", "INT", "INT", "FLOAT", "INT",
-                    "STRING", "IMAGE", "CONDITIONING", "STRING", "AUDIO")
-    RETURN_NAMES = ("positive", "latent", "width", "height", "length", "seconds",
-                    "overlap_frames", "source_video", "guide_frames",
-                    "positive_refine", "clip_name", "locked_audio")
+    # Reordered and trimmed in 1.4.5 (his call, saved workflows rewired once):
+    # width / height / length / seconds and guide_frames were never wired in
+    # practice and are gone; the two conditionings sit together at the bottom.
+    # LiteGraph stores links by output INDEX - from here on, append, never
+    # insert, or every saved workflow is silently rewired again.
+    #   overlap_frames / source_video / locked_audio -> Glide Join (and Glide
+    #   Upscale Hold); locked_audio is the held song/timeline sound as raw
+    #   samples with a splice weight, empty when nothing is held.
+    RETURN_TYPES = ("LATENT", "INT", "STRING", "STRING", "AUDIO",
+                    "CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("latent", "overlap_frames", "source_video", "clip_name",
+                    "locked_audio", "positive", "positive_refine")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -1481,6 +1517,35 @@ class CSGlideCast:
         return out, {"waveform": exact[None].contiguous(), "sample_rate": int(rate),
                      "cglide_weight": weight}
 
+    @staticmethod
+    def _load_full(up, cfg):
+        """The clip's saved full latent, as (latent, frame_count, width, height)."""
+        path = _render_path(up.get("src"), FULL_SIDECAR)
+        if path is None:
+            who = clip_label(cfg) or "this clip"
+            raise FileNotFoundError(
+                "H3 Studio upscale pass: %s has no full latent (.h3full) next to its "
+                "draft render. Render its draft with save_latent = full on Glide "
+                "Video, then run the upscale pass again." % who)
+        from safetensors.torch import load_file
+        saved = load_file(path)
+        video = saved.get("video")
+        if video is None or video.dim() != 5:
+            raise ValueError("H3 Studio upscale pass: %s holds no video latent"
+                             % os.path.basename(path))
+        dev = comfy.model_management.intermediate_device()
+        video = video.to(dev)
+        audio = saved.get("audio")
+        if audio is not None:
+            samples = comfy.nested_tensor.NestedTensor((video, audio.to(dev)))
+        else:
+            samples = video
+        t = int(video.shape[2])
+        frames = 5 if t <= 2 else ((t - 2) // 5) * 17 + 5
+        print("[H3 Studio] upscale pass: loaded %s" % os.path.basename(path))
+        return ({"samples": samples}, frames,
+                int(video.shape[4]) * 16, int(video.shape[3]) * 16)
+
     def _latent_hold(self, cfg, vae, latent, frame_count):
         """LATENT HOLD: put the previous clip's sampled tail in the head of
         this clip's latent and pin it with the noise mask.
@@ -1571,14 +1636,11 @@ class CSGlideCast:
         out["samples"] = comfy.nested_tensor.NestedTensor((new_video, new_audio))
         out["noise_mask"] = comfy.nested_tensor.NestedTensor((v_mask, a_mask))
 
+        # guide_frames is retired: it was a check while latent hold was new.
+        # The socket stays (outputs connect by position, removing it would
+        # shift every wire after it in saved workflows) but nothing is decoded
+        # for it any more.
         preview = None
-        try:
-            preview = vae.decode(new_video[:, :, :k])
-            if preview.dim() == 5:
-                preview = preview.reshape(-1, *preview.shape[-3:])
-            preview = preview[..., :3].float().cpu().clamp(0.0, 1.0)
-        except Exception as e:
-            print("[H3 Studio] latent hold: preview decode skipped (%s)" % e)
 
         print("[H3 Studio] latent hold: %d latent frames (%d pictures) from %s%s, "
               "overlap %d"
@@ -1708,6 +1770,14 @@ class CSGlideCast:
             refine_cond, when given, is a SECOND encode of the same prompt whose
             image references were built larger (see _refs). It goes out on
             positive_refine instead of the stripped copy of cond."""
+            if up:
+                refine = refine_cond if refine_cond is not None else cond
+                print("[H3 Studio] upscale pass: %s, %d frames%s"
+                      % (clip_label(cfg) or "clip", frame_count,
+                         (", joins onto %s (%d overlap)"
+                          % (os.path.basename(up_source), up_overlap)) if up_source else ""))
+                return (latent, up_overlap, up_source, clip_label(cfg), locked_audio,
+                        cond, self._without_keyframes(refine))
             lat = latent
             held = None
             if cfg.get("cont_latent") and cfg.get("cont"):
@@ -1731,17 +1801,27 @@ class CSGlideCast:
             source = ""
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
-            return (cond, lat, width, height, frame_count, seconds, overlap,
-                    source, guide_frames,
+            return (lat, overlap, source, clip_label(cfg), locked_audio, cond,
                     self._without_keyframes(refine_cond
-                                            if refine_cond is not None else cond),
-                    clip_label(cfg), locked_audio)
+                                            if refine_cond is not None else cond))
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         latent, frame_count = _empty_av_latent(width, height, cfg["length"])
         seconds = frame_count / FPS
         latent, locked_audio = self._lock_audio(cfg, audio_vae, latent, seconds)
+
+        up = cfg.get("upscale")
+        up_source, up_overlap = "", 0
+        if up:
+            latent, frame_count, width, height = self._load_full(up, cfg)
+            seconds = frame_count / FPS
+            cfg["cont"] = None                     # the take already holds its join
+            up_source = _render_path(up["prev"]) or ""
+            up_overlap = up["overlap"] if up_source else 0
+            if up["prev"] and not up_source:
+                print("[H3 Studio] upscale: the previous clip's upscaled render %r "
+                      "is gone - this clip goes out unjoined" % up["prev"]["name"])
 
         if cfg["mode"] == "fl2va":
             first = first_frame if first_frame is not None else (
