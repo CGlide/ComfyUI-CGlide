@@ -1100,17 +1100,21 @@ class CSGlideCast:
         }
 
     # Reordered and trimmed in 1.4.5 (his call, saved workflows rewired once):
-    # width / height / length / seconds and guide_frames were never wired in
-    # practice and are gone; the two conditionings sit together at the bottom.
+    # guide_frames is gone; the two conditionings sit together. 1.4.6 brought
+    # width / height / length / seconds back (people DO drive their whole
+    # workflow from H3 Studio, issue from MADmotionAI) plus refine_multiplier,
+    # all APPENDED after positive_refine so 1.4.5 workflows keep their wires.
     # LiteGraph stores links by output INDEX - from here on, append, never
     # insert, or every saved workflow is silently rewired again.
     #   overlap_frames / source_video / locked_audio -> Glide Join (and Glide
     #   Upscale Hold); locked_audio is the held song/timeline sound as raw
     #   samples with a splice weight, empty when nothing is held.
     RETURN_TYPES = ("LATENT", "INT", "STRING", "STRING", "AUDIO",
-                    "CONDITIONING", "CONDITIONING")
+                    "CONDITIONING", "CONDITIONING",
+                    "INT", "INT", "INT", "FLOAT", "FLOAT")
     RETURN_NAMES = ("latent", "overlap_frames", "source_video", "clip_name",
-                    "locked_audio", "positive", "positive_refine")
+                    "locked_audio", "positive", "positive_refine",
+                    "width", "height", "length", "seconds", "refine_multiplier")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -1777,7 +1781,8 @@ class CSGlideCast:
                          (", joins onto %s (%d overlap)"
                           % (os.path.basename(up_source), up_overlap)) if up_source else ""))
                 return (latent, up_overlap, up_source, clip_label(cfg), locked_audio,
-                        cond, self._without_keyframes(refine))
+                        cond, self._without_keyframes(refine),
+                        width, height, frame_count, seconds, refine_mul)
             lat = latent
             held = None
             if cfg.get("cont_latent") and cfg.get("cont"):
@@ -1803,12 +1808,14 @@ class CSGlideCast:
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
             return (lat, overlap, source, clip_label(cfg), locked_audio, cond,
                     self._without_keyframes(refine_cond
-                                            if refine_cond is not None else cond))
+                                            if refine_cond is not None else cond),
+                    width, height, frame_count, seconds, refine_mul)
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         latent, frame_count = _empty_av_latent(width, height, cfg["length"])
         seconds = frame_count / FPS
+        refine_mul = float(cfg.get("ref_refine_scale") or 1.0)
         latent, locked_audio = self._lock_audio(cfg, audio_vae, latent, seconds)
 
         up = cfg.get("upscale")
@@ -1882,7 +1889,6 @@ class CSGlideCast:
         # tokens built from another is a mismatch waiting to surface inside the
         # sampler. Costs one extra text encode, and only when asked for.
         refine_cond = None
-        refine_mul = cfg.get("ref_refine_scale") or 1.0
         if refine_mul > 1.0 and any(s is not None for s in cfg["images"]):
             print("[H3 Studio] refine references at %.2gx" % refine_mul)
             r_items, r_blocks = self._refs(cfg, vae, audio_vae, width, height,
