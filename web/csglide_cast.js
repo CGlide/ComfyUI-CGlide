@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-09-26a - refine dropdown";
+const H3_STUDIO_UI_BUILD = "2026-10-23b - < tags + smaller hover preview";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -1530,6 +1530,17 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 .gcast-ac .tag { margin-left:auto; color:var(--h3-dim); font-size:10px; }
 .gcast-ac .glyph.mark { background:var(--h3-accent-dim); color:var(--h3-accent); }
 .gcast-ac .none { padding:6px 8px; color:var(--h3-dim); font-size:11px; font-family:inherit; }
+.gcast-ac .glyph.subj { font-weight:700; }
+.gcast-refprev { position:fixed; z-index:80; pointer-events:none; display:none;
+  background:#2b2b2b; border:1px solid #58d1ff; border-radius:8px; padding:6px;
+  box-shadow:0 10px 28px #000b; max-width:200px;
+  font-family:ui-monospace,Consolas,monospace; font-size:11px; color:#e3e3e3; }
+.gcast-refprev[data-mode="fl2va"] { border-color:#59c14f; }
+.gcast-refprev img, .gcast-refprev video { display:block; max-width:150px; max-height:134px;
+  width:auto; height:auto; border-radius:5px; background:#000; margin-bottom:5px; }
+.gcast-refprev .nm { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gcast-refprev .kd { color:#979797; font-size:10px; margin-top:2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .gcast-pres { background:var(--h3-well); border:1px solid var(--h3-line); border-radius:7px;
   box-shadow:inset 0 1px 3px rgba(0,0,0,.38);
   padding:7px 9px; display:flex; flex-wrap:wrap; gap:4px 10px;
@@ -4358,7 +4369,9 @@ function buildUI(node) {
    * in the same colour their band has on the timeline just above. */
   /* third group: raw <Picture N> / <Video N> / <Audio N> tags, coloured like
    * an @tag when they land on a filled slot, amber when they don't */
-  const HL_RE = /(\[\s*Shot\s*\d+\s*\](?:\s*At\s+[0-9:.]+\s*s?\s*,?)?)|(@[A-Za-z][A-Za-z0-9]*)|(<\s*(?:picture|video|audio)\s*\d+\s*>)/gi;
+  /* <Subject N> is H3's own character label in full-reference mode: it names
+   * no slot, so it is coloured whenever it is written in the exact form. */
+  const HL_RE = /(\[\s*Shot\s*\d+\s*\](?:\s*At\s+[0-9:.]+\s*s?\s*,?)?)|(@[A-Za-z][A-Za-z0-9]*)|(<\s*(?:picture|video|audio|subject)\s*\d+\s*>)/gi;
 
   function hlMarkup(text) {
     let out = "", last = 0, shot = 0, m;
@@ -4372,13 +4385,15 @@ function buildUI(node) {
         out += '<span class="shot" style="color:' + c + '">' + hlEsc(m[1]) + "</span>";
       } else if (m[3]) {
         /* exact form AND pointing at a filled slot, or it is worth seeing */
-        const raw = m[3], canon = rawTagCanon(raw.replace(/[<>\s\d]/g, ""), raw.replace(/\D/g, ""));
-        out += '<span class="' + (raw === canon && live.has(canon) ? "tok" : "bad") + '">'
+        const raw = m[3], kind = raw.replace(/[<>\s\d]/g, ""), num = raw.replace(/\D/g, "");
+        const canon = rawTagCanon(kind, num);
+        const ok = raw === canon && (/^subject$/i.test(kind) ? +num >= 1 : live.has(canon));
+        out += '<span class="' + (ok ? "tok" : "bad") + '" data-r="' + hlEsc(raw) + '">'
              + hlEsc(raw) + "</span>";
       } else {
         /* a tag that names no slot is a typo you want to see NOW, not after
          * a render comes back with the reference missing */
-        out += '<span class="' + (TOKEN_SET.has(m[2]) ? "tok" : "bad") + '">'
+        out += '<span class="' + (TOKEN_SET.has(m[2]) ? "tok" : "bad") + '" data-r="' + hlEsc(m[2]) + '">'
              + hlEsc(m[2]) + "</span>";
       }
       last = m.index + m[0].length;
@@ -8142,17 +8157,89 @@ function buildUI(node) {
     return { text: `[Shot ${n}] At ${mmss(t)}, `, token: `[Shot ${n}]`, tag: `At ${mmss(t)}` };
   }
 
-  function openAC(query, start) {
+  /* ---- raw tags: what "<" offers ------------------------------------
+   *
+   * People writing the official format by hand type <Subject N> over and over
+   * (issue #37). "<" lists the subjects already in the prompt, the next free
+   * one, and then the real <Picture N> / <Video N> / <Audio N> tags of the
+   * filled slots - the same numbering the tokenizer will use. */
+  function subjectNums() {
+    const out = new Set(), re = /<Subject (\d+)>/g;
+    let m;
+    while ((m = re.exec(ta.value || "")) !== null) if (+m[1] >= 1) out.add(+m[1]);
+    return [...out].sort((a, b) => a - b);
+  }
+
+  /* The reference a subject is defined from: the first @token or <Picture N> /
+   * <Video N> after its tag, on the first line that has one. Read only for
+   * the preview - nothing is sent differently because of it. */
+  function subjectSource(n) {
+    const tag = `<Subject ${n}>`;
+    for (const line of (ta.value || "").split("\n")) {
+      const i = line.indexOf(tag);
+      if (i < 0) continue;
+      const m = /@(?:first|last|image\d|video\d)(?![0-9A-Za-z])|<(?:Picture|Video) \d+>/.exec(line.slice(i + tag.length));
+      if (m) return m[0];
+    }
+    return null;
+  }
+
+  /* @token or raw tag -> what it points at. null when it names no filled slot. */
+  function resolveRef(ref) {
+    const pres = presentation(st);
+    const row = ref[0] === "@"
+      ? pres.rows.find((r) => tokenOf(r) === ref)
+      : pres.rows.find((r) => r.tag === ref);
+    if (!row) return null;
+    const token = tokenOf(row);
+    let file = null;
+    if (row.kind === "audio") {
+      const a = /^@audio(\d)$/.exec(token || "");
+      const v = /^@videoaudio(\d)$/.exec(token || "");
+      file = a ? st.slots.audios[+a[1] - 1].file : v ? st.slots.videos[+v[1] - 1].file : null;
+    } else file = fileForToken(token);
+    return { token, tag: row.tag, kind: row.kind, from: row.from, file };
+  }
+
+  function rawItems(q) {
+    const items = [];
+    if (st.mode !== "fl2va") {
+      const nums = subjectNums();
+      nums.forEach((n) => {
+        const src = subjectSource(n), info = src ? resolveRef(src) : null;
+        items.push({ insert: `<Subject ${n}>`, token: `<Subject ${n}>`,
+          tag: src ? "from " + src : "in prompt",
+          kind: info && info.file && info.kind !== "audio" ? info.kind : "subject",
+          file: info ? info.file : null });
+      });
+      const next = (nums.length ? nums[nums.length - 1] : 0) + 1;
+      items.push({ insert: `<Subject ${next}>`, token: `<Subject ${next}>`, tag: "new subject",
+        kind: "subject", isNew: true, file: null });
+    }
+    presentation(st).rows.forEach((r) => {
+      const info = resolveRef(r.tag);
+      items.push({ insert: r.tag, token: r.tag, tag: r.from, kind: r.kind,
+        file: info && r.kind !== "audio" ? info.file : null });
+    });
+    const qn = q.toLowerCase().replace(/\s+/g, "");
+    return items.filter((o) => !qn || o.token.slice(1, -1).toLowerCase().replace(/\s+/g, "").includes(qn));
+  }
+
+  function openAC(query, start, raw) {
     const { rows } = presentation(st);
     const q = query.toLowerCase();
-    acItems = rows
-      .map((r) => ({ token: tokenOf(r), tag: r.tag, from: r.from, kind: r.kind }))
-      .filter((o) => o.token && (!q || o.token.slice(1).toLowerCase().includes(q)));
+    if (raw) {
+      acItems = rawItems(query);
+    } else {
+      acItems = rows
+        .map((r) => ({ token: tokenOf(r), tag: r.tag, from: r.from, kind: r.kind }))
+        .filter((o) => o.token && (!q || o.token.slice(1).toLowerCase().includes(q)));
 
-    /* always last in the list - it is an action, not a reference */
-    if (!q || "shot marker cut".includes(q)) {
-      const mk = nextShotMarker();
-      acItems.push({ special: "shot", insert: mk.text, token: mk.token, tag: mk.tag, kind: "shot" });
+      /* always last in the list - it is an action, not a reference */
+      if (!q || "shot marker cut".includes(q)) {
+        const mk = nextShotMarker();
+        acItems.push({ special: "shot", insert: mk.text, token: mk.token, tag: mk.tag, kind: "shot" });
+      }
     }
     acStart = start;
     acIdx = 0;
@@ -8186,8 +8273,9 @@ function buildUI(node) {
     }
     acItems.forEach((o, i) => {
       const b = el("button");
-      const file = fileForToken(o.token);
+      const file = ("file" in o) ? o.file : fileForToken(o.token);
       if (o.special) b.append(el("span", "glyph mark", "\u2702"));
+      else if (o.kind === "subject") b.append(el("span", "glyph subj" + (o.isNew ? " mark" : ""), o.isNew ? "+" : "S"));
       else if (o.kind === "image" && file) { const im = el("img"); im.src = viewURL(file); b.append(im); }
       else if (o.kind === "video" && file) { const v = el("video"); v.src = viewURL(file); v.muted = true; v.preload = "metadata"; b.append(v); }
       else b.append(el("span", "glyph", "\u266a"));
@@ -8208,7 +8296,7 @@ function buildUI(node) {
     /* a shot marker starts a line; a reference tag goes wherever you are */
     const insert = o.special
       ? ((before.length && !/\n[ \t]*$/.test(before) ? "\n" : "") + o.insert)
-      : o.token + " ";
+      : (o.insert || o.token) + " ";
 
     ta.value = before + insert + ta.value.slice(caret);
     const pos = acStart + insert.length;
@@ -8221,9 +8309,13 @@ function buildUI(node) {
 
   function maybeAC() {
     const caret = ta.selectionStart;
-    const m = /@([A-Za-z0-9]*)$/.exec(ta.value.slice(0, caret));
-    if (!m) { closeAC(); return; }
-    openAC(m[1], caret - m[0].length);
+    const head = ta.value.slice(0, caret);
+    const m = /@([A-Za-z0-9]*)$/.exec(head);
+    if (m) { openAC(m[1], caret - m[0].length); return; }
+    /* "<", "<Sub", "<Subject 3", "<pic" ... but not "a < b" */
+    const r = /<([A-Za-z]+ ?\d*|)$/.exec(head);
+    if (r) { openAC(r[1], caret - r[0].length, true); return; }
+    closeAC();
   }
 
   ta.addEventListener("keydown", (e) => {
@@ -8244,6 +8336,86 @@ function buildUI(node) {
   });
   ta.addEventListener("blur", () => setTimeout(closeAC, 120));
   ta.addEventListener("click", () => maybeAC());
+
+  /* ---- hover preview --------------------------------------------------
+   *
+   * The textarea sits on top of the colour layer, so the spans never get the
+   * mouse. Hit-test their rects instead (getClientRects already includes the
+   * canvas zoom). The picture keeps its own aspect ratio - a cropped square
+   * would hide exactly what you are checking. */
+  const rp = el("div", "gcast-refprev");
+  document.body.append(rp);
+  let rpKey = "", rpX = 0, rpY = 0;
+
+  function hideRP() {
+    if (!rpKey) return;
+    rpKey = "";
+    rp.style.display = "none";
+    rp.replaceChildren();
+  }
+
+  function placeRP() {
+    if (!rpKey) return;
+    const w = rp.offsetWidth, h = rp.offsetHeight;
+    let L = rpX + 14, T = rpY - h - 14;
+    if (L + w > window.innerWidth - 8) L = window.innerWidth - w - 8;
+    if (L < 8) L = 8;
+    if (T < 8) T = rpY + 20;
+    rp.style.left = L + "px";
+    rp.style.top = T + "px";
+  }
+
+  function showRP(ref, x, y) {
+    rpX = x; rpY = y;
+    if (ref === rpKey) { placeRP(); return; }
+    let info = null, label = ref, sub = "";
+    const sm = /^<Subject (\d+)>$/.exec(ref);
+    if (sm) {
+      const src = subjectSource(+sm[1]);
+      info = src ? resolveRef(src) : null;
+      if (src) label = ref + "  \u2190  " + src;
+      sub = !src ? "no reference in its definition yet" : info ? info.from : src + " is empty";
+    } else {
+      info = resolveRef(ref);
+      if (!info) { hideRP(); return; }
+      label = ref[0] === "@" ? ref + "  \u2192  " + info.tag : ref + (info.token ? "  \u2190  " + info.token : "");
+      sub = info.from;
+    }
+    rpKey = ref;
+    rp.replaceChildren();
+    rp.dataset.mode = st.mode;
+    if (info && info.file && info.kind === "image") {
+      const im = el("img");
+      im.onload = placeRP;
+      im.src = viewURL(info.file);
+      rp.append(im);
+    } else if (info && info.file && info.kind === "video") {
+      const v = el("video");
+      v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true;
+      v.onloadeddata = placeRP;
+      v.src = viewURL(info.file);
+      rp.append(v);
+    } else if (info && info.file && info.kind === "audio") {
+      sub = "\u266a " + info.file.split("/").pop() + " \u00b7 " + sub;
+    }
+    rp.append(el("div", "nm", label), el("div", "kd", sub));
+    rp.style.display = "block";   /* the stylesheet hides it by default */
+    placeRP();
+  }
+
+  ta.addEventListener("mousemove", (e) => {
+    if (!hlOn || ac.style.display !== "none") { hideRP(); return; }
+    let hit = null;
+    for (const sp of hlInner.querySelectorAll("span.tok[data-r]")) {
+      for (const r of sp.getClientRects()) {
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) { hit = sp; break; }
+      }
+      if (hit) break;
+    }
+    if (!hit) { hideRP(); return; }
+    showRP(hit.dataset.r, e.clientX, e.clientY);
+  });
+  ["mouseleave", "scroll", "keydown", "blur", "input"].forEach((ev) => ta.addEventListener(ev, hideRP));
 
   function insert(token) {
     const s = ta.selectionStart ?? ta.value.length;
@@ -8537,6 +8709,7 @@ function buildUI(node) {
     destroy() {
       try { laneStop(false); } catch (e) { /* never block removal */ }
       ac.remove();
+      rp.remove();
       try { api.removeEventListener("execution_success", onPromptDone); } catch (e) { /* older api */ }
       /* a window listener per node instance would outlive the node */
       window.removeEventListener("paste", onPaste, true);
