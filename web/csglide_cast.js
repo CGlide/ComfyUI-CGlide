@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-10-23b - < tags + smaller hover preview";
+const H3_STUDIO_UI_BUILD = "2026-10-26f - latent band finds unrecorded renders";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -846,13 +846,24 @@ const CSS = `
 /* The ruler is a pan surface as well as a scale. Once the strip overflows
    there is no empty track left to grab -- every pixel of it is a block --
    so without this the only way to scroll a long film is the wheel. */
-.gcast-tl .rule { position:relative; height:10px; overflow:hidden;
+.gcast-tl .rule { position:relative; height:13px; overflow:hidden;
   touch-action:none; flex:1 1 auto; min-width:0; }
 .gcast-tl .rule.pannable { cursor:grab; }
 .gcast-tl .rule.panning { cursor:grabbing; }
 .gcast-tl .rule .t { position:absolute; bottom:0; width:1px; height:3px;
   background:var(--h3-dim); opacity:.32; }
 .gcast-tl .rule .t.maj { height:6px; opacity:.65; }
+/* Latent band: which clips have a saved latent beside their draft render.
+   ComfyUI's own LATENT colour. Full spans the clip, tail-only sits over the
+   last 39 frames - the part latent hold actually uses. */
+.gcast-tl .rule .lat { position:absolute; bottom:0; height:4px; border-radius:2px;
+  background:#FF9CF9; pointer-events:none; }
+.gcast-tl .rule .lat.tail { opacity:.8; }
+.gcast-tl .rule .latlbl { position:absolute; left:0; top:0; line-height:1;
+  font-family:ui-monospace,Consolas,monospace; font-size:8px; color:#FF9CF9;
+  pointer-events:none; }
+.gcast-seg.lat button[aria-pressed="true"] { background:#FF9CF9; color:#101010; }
+.gcast-seg.lat button:focus-visible { outline-color:#FF9CF9; }
 .gcast-tl .rule .lbl { position:absolute; top:0; margin-left:3px; line-height:1;
   font-family:ui-monospace,Consolas,monospace; font-size:8px; color:var(--h3-dim);
   opacity:.75; }
@@ -1290,9 +1301,9 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 .gcast-bar { display:flex; align-items:center; gap:7px; padding:2px 0 4px; }
 .gcast-bar .gcast-btn { padding:6px 12px; font-size:12px; }
 .gcast-bar .gcast-btn.shots.nav { padding:6px 7px; }
-/* Settings belong to the node, not to the project, so the gear drops the violet
-   the Project button and its steppers share and sits in plain grey, with a gap
-   before it so it does not read as part of the stepper pair. */
+/* Only the Project button keeps the violet; the clip steppers and the gear sit
+   in plain grey (1.4.8). The gap keeps the gear from reading as a third
+   stepper. */
 .gcast-btn.shots.nav.gear { margin-left:6px; padding:5px 7px;
   background:var(--h3-raise); border-color:var(--h3-line); }
 .gcast-btn.shots.nav.gear .ico { color:#9a9a9a; }
@@ -1337,14 +1348,17 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
    and narrow on purpose - a triangle needs no label, and anything wider starts
    competing with Project for the eye. */
 .gcast-clipnav { display:inline-flex; gap:2px; margin-left:4px; }
-.gcast-btn.shots.nav { padding:4px 5px; gap:0; }
-.gcast-btn.shots.nav .ico { color:#c9aeff; }
+.gcast-btn.shots.nav { padding:4px 5px; gap:0;
+  background:var(--h3-raise); border-color:var(--h3-line); }
+.gcast-btn.shots.nav .ico { color:#9a9a9a; }
+.gcast-btn.shots.nav:hover { border-color:#6b6b6b; }
+.gcast-btn.shots.nav:hover .ico { color:#e2e2e2; }
 /* Dim, not hidden, and not wrapping: at 1/3 the left triangle has to say there
    is nothing to its left. A wrap would land you on the last clip with nothing
    on screen explaining the jump. */
 .gcast-btn.shots.nav[disabled] { opacity:.3; cursor:default; }
-.gcast-btn.shots.nav[disabled]:hover { border-color:#584a78; }
-.gcast-btn.shots.nav[disabled]:hover .ico { color:#c9aeff; }
+.gcast-btn.shots.nav[disabled]:hover { border-color:var(--h3-line); }
+.gcast-btn.shots.nav[disabled]:hover .ico { color:#9a9a9a; }
 .gcast-shots {
   --h3-raise:#2b2b2b; --h3-line:#3b3b3b; --h3-well:#131313; --h3-panel:#212121;
   --h3-txt:#e3e3e3; --h3-dim:#979797; --h3-violet:#a97bff;
@@ -1801,7 +1815,11 @@ function buildUI(node) {
   function upscaleMeta() {
     if (!upscaleOn()) return null;
     const p = node.properties && node.properties.gcast_project;
-    if (!p || !Array.isArray(p.shots) || !(p.idx >= 0) || !p.shots[p.idx]) return null;
+    /* Ticked with no project clip: still say "upscale", with no source, so the
+       node stops with a clear error instead of quietly building an empty
+       latent that the refine turns into noise. */
+    if (!p || !Array.isArray(p.shots) || !(p.idx >= 0) || !p.shots[p.idx])
+      return { src: null, prev: null, overlap: 0 };
     const sh = p.shots[p.idx];
     const linked = p.idx > 0 && !!sh.link;
     return {
@@ -1809,6 +1827,116 @@ function buildUI(node) {
       prev: linked ? pickOf(p.shots[p.idx - 1].lastUp) : null,
       overlap: linked ? songOverlap(p, p.idx) : 0,
     };
+  }
+
+  /* SAVE LATENT, a project setting (settings wheel). Read straight from the
+     properties rather than through settings(), which is defined further down
+     and can still be in its temporal dead zone the first time commit runs.
+     The upscale pass always saves the tail: the refined tail is what the next
+     clip holds on, and the draft's .h3full is the one that matters. */
+  const saveLatentMode = () => {
+    const s = node.properties && node.properties.gcast_settings;
+    const v = s && s.saveLatent;
+    return (v === "tail" || v === "off") ? v : "full";
+  };
+
+  /* LATENT BAND. Which project clips have a .h3latent (tail) or .h3full
+     beside their draft render, asked of the server and drawn as a thin band
+     in the ruler over each clip. Declared up here, before anything can paint,
+     so the first timeline paint never meets these in their dead zone. */
+  let latStatus = new Map(), latSig = null, latTimer = 0;
+  const latKey = (o) => (o && o.name)
+    ? (o.type === "temp" ? "temp" : "output") + ":" + (o.subfolder || "") + "/" + o.name : "";
+  const latOf = (sh) => latStatus.get(latKey(sh && sh.lastOut)) || null;
+  function latCode(sh) {
+    const s = latOf(sh);
+    return s ? (s.full ? "F" : s.tail ? "T" : "0") : "";
+  }
+  function refreshLatentsSoon() {
+    clearTimeout(latTimer);
+    latTimer = setTimeout(refreshLatents, 250);
+  }
+  /* cheap: only asks again when the set of recorded renders changed */
+  const latSigOf = (p) => String((p && p.name) || "") + "#" + ((p && p.shots) || [])
+    .map((s, i) => (s && s.name || "") + "@" + latKey(s && s.lastOut)).join("|");
+  function latentsCheck(p) {
+    const sig = latSigOf(p);
+    if (sig === latSig) return;
+    latSig = sig;
+    refreshLatentsSoon();
+  }
+  let latRetry = 0;
+  async function refreshLatents() {
+    const p = proj();
+    const shots = (p && Array.isArray(p.shots)) ? p.shots : [];
+    /* every clip goes, recorded or not: the server can find a render the
+       project never heard about by the name H3 Studio gave it */
+    const list = shots.map((s, i) => ({
+      name: String((s && s.name) || "").trim(), index: i + 1, count: shots.length,
+      project: String((p && p.name) || "").trim(),
+      rec: (s && s.lastOut && s.lastOut.name)
+        ? { name: String(s.lastOut.name), subfolder: String(s.lastOut.subfolder || ""),
+            type: s.lastOut.type === "temp" ? "temp" : "output" } : null,
+      up: (s && s.lastUp && s.lastUp.name) ? { name: String(s.lastUp.name) } : null,
+    }));
+    const m = new Map();
+    if (list.length) {
+      let d = null;
+      try {
+        const r = await api.fetchApi("/cglide/latent_status", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clips: list }),
+        });
+        if (r.status === 404) {           // server older than the band: say it once
+          console.warn("[H3 Studio] latent band: the server has no /cglide/latent_status "
+                       + "yet - restart ComfyUI after updating.");
+          return;
+        }
+        if (r.status !== 200) throw new Error("latent_status " + r.status);
+        d = await r.json();
+      } catch (e) {
+        /* busy server or a hiccup: one retry, not a loop */
+        console.warn("[H3 Studio] latent band: check failed, retrying -", e);
+        if (latRetry++ < 3) setTimeout(refreshLatents, 3000);
+        return;
+      }
+      latRetry = 0;
+      let healed = 0, full = 0, tail = 0, none = 0;
+      const lost = [], fixes = [];
+      list.forEach((c, i) => {
+        const s = d.status && d.status[i];
+        const sh = shots[i];
+        if (!s || !sh) return;
+        /* Record missing or pointing at nothing: take the render the server
+           found, so the upscale pass and latent hold use it too, not just
+           the band. */
+        if (s.rec && s.rec.name) {
+          const was = sh.lastOut && sh.lastOut.name;
+          sh.lastOut = { name: s.rec.name, subfolder: s.rec.subfolder || "",
+                         type: s.rec.type === "temp" ? "temp" : "output" };
+          healed++;
+          fixes.push(`${shotLabel(sh, i)} \u2192 ${s.rec.subfolder ? s.rec.subfolder + "/" : ""}${s.rec.name}`
+                     + (was && was !== s.rec.name ? ` (was ${was})` : ""));
+        }
+        if (sh.lastOut && sh.lastOut.name) m.set(latKey(sh.lastOut), s);
+        if (!s.found) { if (c.rec) lost.push(c.rec.name); else none++; }
+        else if (s.full) full++; else if (s.tail) tail++;
+      });
+      console.log(`[H3 Studio] latent band: ${list.length} clip(s) \u2014 ${full} full, `
+                  + `${tail} tail only`
+                  + (healed ? `, ${healed} render(s) found on disk and recorded` : "")
+                  + (none ? `, ${none} never rendered` : "")
+                  + (lost.length ? `, ${lost.length} recorded but missing (${lost.slice(0, 3).join(", ")}`
+                                   + (lost.length > 3 ? ", \u2026" : "") + ")" : ""));
+      fixes.forEach((f) => console.log("[H3 Studio]   " + f));
+      if (healed) {
+        latSig = latSigOf(p);     // no second round trip for the same answer
+        commit();
+      }
+    }
+    latStatus = m;
+    tlSig = "";            // the block tooltips name the latent too
+    paintTimeline();
   }
 
   const commit = () => {
@@ -1820,7 +1948,8 @@ function buildUI(node) {
       { clip: clipMeta(), song: songMeta(),
         /* node-level, like "+ look": Render all clears and refills CONTINUE
            FROM on every link, so a flag kept in the slot would not survive */
-        cont_latent: latentHoldOn(), upscale: upscaleMeta() }));
+        cont_latent: latentHoldOn(), upscale: upscaleMeta(),
+        save_latent: upscaleOn() ? "tail" : saveLatentMode() }));
     node.setDirtyCanvas(true, true);
   };
 
@@ -5589,6 +5718,7 @@ function buildUI(node) {
 
     tlStrip.style.left = (-tlPan) + "px";
     paintRule(L);
+    if (!L.virtual) latentsCheck(p);
 
     if (L.virtual) {
       const vsig = ["V", Math.round(L.pps * 100), Math.round(L.view), Math.round(L.total * 100)].join("/");
@@ -5633,7 +5763,8 @@ function buildUI(node) {
                    + ":" + Math.round(tlSecs(sh.state) * 100)
                    + (sh.off ? ":off" : "")
                    + (sh.link ? ":L" : "")
-                   + (sh.colour ? ":" + sh.colour : "")).join("|")].join("/");
+                   + (sh.colour ? ":" + sh.colour : "")
+                   + ":" + latCode(sh)).join("|")].join("/");
     if (sig === tlSig && tlStrip.children.length) return;
     tlSig = sig;
     tlStrip.style.width = L.width + "px";
@@ -5668,6 +5799,13 @@ function buildUI(node) {
                   : "  \u2014 included in Render")
               + "  (double-click to rename, right-click for colour, Alt-click to "
               + (sh.off ? "include" : "skip") + ")";
+      if (sh.lastOut && sh.lastOut.name) {
+        const ls = latOf(sh);
+        d.title += "\nLatent: " + (!ls ? "checking\u2026"
+          : ls.full ? "full (.h3full) \u2014 can be upscaled"
+          : ls.tail ? "tail only (.h3latent) \u2014 latent hold works, no upscale"
+          : "none saved");
+      }
       if (b.w < 24) d.classList.add("tiny");
       if (sh.off) d.classList.add("off");
       /* 46px is where a 13px dot plus the padding still leaves room for a
@@ -5726,6 +5864,28 @@ function buildUI(node) {
     let step = TL_TICKS[TL_TICKS.length - 1];
     for (const cand of TL_TICKS) { if (cand * L.pps >= 46) { step = cand; break; } }
     tlRule.replaceChildren();
+    /* latent band first, so the ticks draw over it */
+    let latAny = false;
+    if (!L.virtual && Array.isArray(L.blocks)) {
+      const pj = proj();
+      const tailSecs = 39 / FPS;      // 12 latent frames: what a .h3latent holds
+      L.blocks.forEach((b) => {
+        const s = pj && pj.shots ? latOf(pj.shots[b.i]) : null;
+        if (!s || (!s.full && !s.tail)) return;
+        let x0 = b.x, w = Math.max(3, b.w - 2);
+        if (!s.full) {
+          const tw = Math.max(6, Math.min(w, tailSecs * L.pps));
+          x0 = b.x + w - tw; w = tw;
+        }
+        const left = x0 - tlPan;
+        if (left + w < 0 || left > L.view) return;
+        const band = el("div", "lat " + (s.full ? "full" : "tail"));
+        band.style.left = left + "px";
+        band.style.width = w + "px";
+        tlRule.append(band);
+        latAny = true;
+      });
+    }
     const first = Math.floor(tlPan / L.pps / step) * step;
     const last = (tlPan + L.view) / L.pps;
     for (let t = first; t <= last; t += step) {
@@ -5741,6 +5901,13 @@ function buildUI(node) {
         lb.style.left = x + "px";
         tlRule.append(lb);
       }
+    }
+    /* names the band, only when there is one to name */
+    if (latAny) {
+      const lb = el("div", "latlbl", "latent");
+      lb.title = "Pink band: a saved latent beside the clip's draft. Full width = .h3full "
+               + "(can be upscaled), short band at the end = tail only (.h3latent).";
+      tlRule.append(lb);
     }
     const canPan = L.width > L.view + 1;
     tlView.classList.toggle("pannable", canPan);
@@ -6343,6 +6510,7 @@ function buildUI(node) {
     const key = isUp ? "lastUp" : "lastOut";
     const was = sh[key] && sh[key].name;
     sh[key] = { name: out.name, subfolder: out.subfolder || "", type: out.type || "output" };
+    refreshLatentsSoon();
     if (was !== out.name) {
       console.log(`[H3 Studio] ${shotLabel(sh, clip.index - 1)} `
                 + `${isUp ? "upscaled" : "rendered"} \u2192 ${out.name}`
@@ -6753,6 +6921,7 @@ function buildUI(node) {
            in this run or a later one. */
         sh[state.upscale ? "lastUp" : "lastOut"] = { name: out.name,
                        subfolder: out.subfolder || "", type: out.type || "output" };
+        refreshLatentsSoon();
         run.made.push(out.name);
         state.made = run.made.slice();
         state.k = k + 1; state.promptId = null;
@@ -7240,6 +7409,33 @@ function buildUI(node) {
     orow.append(oseg);
     setPanel.append(orow);
 
+    /* Save latent. What Glide Video writes beside each draft, through the
+       save_latent output -> Glide Video's save_latent_in. full also writes
+       the tail, so chaining keeps working; it is the only mode a take can be
+       upscaled from later. */
+    const srow = el("div", "gcast-set-row line");
+    srow.append(el("div", "t", "Save latent"));
+    srow.title = "What Glide Video saves next to each draft render. Wire H3 Studio's "
+      + "save_latent output into Glide Video's save_latent_in.\n"
+      + "full - the whole latent (.h3full, ~30 MB) AND the tail: latent hold works "
+      + "and the take can be upscaled later. Default.\n"
+      + "tail - only the .h3latent (~5 MB): latent hold works, no upscale later.\n"
+      + "off - nothing saved.\n"
+      + "The upscale pass always saves the tail, whatever this says.";
+    const sseg = el("div", "gcast-seg small lat");
+    ["full", "tail", "off"].forEach((v) => {
+      const b = el("button", null, v);
+      b.setAttribute("aria-pressed", String(saveLatentMode() === v));
+      b.onclick = (e) => {
+        e.stopPropagation();
+        settings().saveLatent = v;
+        commit(); paintSettings();
+      };
+      sseg.append(b);
+    });
+    srow.append(sseg);
+    setPanel.append(srow);
+
     /* Project latents. Every render with a latent wired leaves a ~30 MB
        .h3latent beside it, and they are only needed to continue FROM that
        clip - so once a chain is finished they are dead weight. Scans first
@@ -7285,6 +7481,7 @@ function buildUI(node) {
                    + "will use the normal guide instead of latent hold.")) return;
         const done = await ask(true);
         ldesc.textContent = `Deleted ${done.deleted} (${mb} MB)` + (done.failed ? ` \u00b7 ${done.failed} failed` : "");
+        refreshLatentsSoon();
       } catch (err) {
         console.error("[H3 Studio] latent cleanup failed:", err);
         ldesc.textContent = "Error - see console";
@@ -8735,7 +8932,7 @@ function buildUI(node) {
 /* Printed once on load: which build of this file the browser is running.
    Browsers cache extension scripts hard, so "I updated it and nothing
    changed" is answered by this line before anything else. */
-const H3_BUILD = "1.4.5 \u00b7 2026-10-18";
+const H3_BUILD = "1.4.8 \u00b7 2026-10-26";
 console.log(`[H3 Studio] build ${H3_BUILD}`);
 
 app.registerExtension({

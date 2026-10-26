@@ -226,6 +226,116 @@ def _render_path(org, ext=None):
     return os.path.realpath(path)
 
 
+_RENDER_EXT = (".mkv", ".mp4", ".mov", ".webm")
+
+
+def _latest_for_clip(c):
+    """The newest render of one project clip, found by the name clip_label
+    gives it: output/<project>/<NN>_<name>_<counter>.<ext>. Skips preview
+    proxies and the file recorded as the clip's UPSCALE (same prefix, but it
+    is not the draft). None when nothing matches."""
+    try:
+        idx = int(c.get("index") or 0)
+        cnt = int(c.get("count") or 0)
+    except Exception:
+        return None
+    label = clip_label({"clip": {"name": str(c.get("name") or ""), "index": idx,
+                                 "count": cnt, "project": str(c.get("project") or "")}})
+    if not label:
+        return None
+    sub, _, stem = label.rpartition("/")
+    try:
+        root = folder_paths.get_output_directory()
+    except Exception:
+        return None
+    folder = os.path.realpath(os.path.join(root, sub))
+    if not _inside_dir(root, folder) or not os.path.isdir(folder):
+        return None
+    up = c.get("up")
+    skip = os.path.basename(up["name"]) if isinstance(up, dict) and isinstance(up.get("name"), str) else ""
+    pat = re.compile(r"^%s_\d+(%s)$" % (re.escape(stem), "|".join(re.escape(e) for e in _RENDER_EXT)),
+                     re.IGNORECASE)
+    best, best_mt = None, -1.0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    for n in names:
+        if n == skip or not pat.match(n):
+            continue
+        try:
+            mt = os.path.getmtime(os.path.join(folder, n))
+        except OSError:
+            continue
+        if mt > best_mt:
+            best, best_mt = n, mt
+    if best is None:
+        return None
+    return {"name": best, "subfolder": sub.replace("\\", "/"), "type": "output"}
+
+
+def _render_index(limit=50000):
+    """basename -> (mtime, type, subfolder) for every video under output/ and
+    temp/, keeping the newest when a name repeats. One walk, bounded."""
+    found = {}
+    seen = 0
+    for kind in ("output", "temp"):
+        try:
+            root = (folder_paths.get_temp_directory() if kind == "temp"
+                    else folder_paths.get_output_directory())
+        except Exception:
+            continue
+        for base, dirs, files in os.walk(root):
+            dirs.sort()
+            for fn in files:
+                seen += 1
+                if seen > limit:
+                    return found
+                if os.path.splitext(fn)[1].lower() not in (".mkv", ".mp4", ".mov", ".webm"):
+                    continue
+                full = os.path.join(base, fn)
+                try:
+                    mt = os.path.getmtime(full)
+                except OSError:
+                    continue
+                rel = os.path.relpath(base, root)
+                sub = "" if rel == "." else rel.replace(os.sep, "/")
+                if fn not in found or mt > found[fn][0]:
+                    found[fn] = (mt, kind, sub)
+    return found
+
+
+UPHOLD_CLASS = "CSGlideUpscaleHoldCS"
+
+
+def _upscale_workflow(prompt, uid):
+    """Is this an upscale workflow? Read from the API prompt ComfyUI hands in.
+
+    ("hold", name)  Glide Upscale Hold is in the graph - it only exists for the
+                    upscale pass, so this is certain.
+    ("up", name)    a node with "upscal" in its type takes H3 Studio's latent
+                    (output 0) directly - almost certainly upscaling an empty
+                    latent, but a hi-res first pass could do it on purpose.
+    None            neither. Bypassed and muted nodes never reach the prompt.
+    """
+    if not isinstance(prompt, dict):
+        return None
+    up = None
+    for nd in prompt.values():
+        if not isinstance(nd, dict):
+            continue
+        ct = str(nd.get("class_type") or "")
+        if ct == UPHOLD_CLASS:
+            return ("hold", "Glide Upscale Hold")
+        if up is None and uid is not None and re.search("upscal", ct, re.I):
+            for v in (nd.get("inputs") or {}).values():
+                if (isinstance(v, list) and len(v) == 2
+                        and str(v[0]) == str(uid) and v[1] == 0):
+                    up = ("up", ct)
+                    break
+    return up
+
+
 def _find_latent_sidecar(cont):
     """The .h3latent Glide Video wrote beside the clip CONTINUE FROM holds.
 
@@ -553,6 +663,37 @@ def pick_reference_span(ref, ladder=SPAN_LADDER, prefer_tail=True):
             "score": best["score"], "note": note}
 
 
+def _frame_planar(frame):
+    """One decoded PyAV audio frame as float32 [channels, samples].
+
+    to_ndarray() only gives [channels, samples] for PLANAR formats (fltp,
+    s16p - what mp3 and aac decode to). PACKED formats (s16, s32, flt - what
+    a WAV decodes to) come back as ONE interleaved row [1, samples*channels].
+    Read as-is, a stereo WAV became a "mono" track twice as long, which plays
+    at half speed - the 48 kHz WAV slowdown reported on YouTube. Integers are
+    scaled by their own range, so 24-bit audio (decoded as s32) is not 65536x
+    too loud either."""
+    a = frame.to_ndarray()
+    if a.ndim == 1:
+        a = a[None, :]
+    try:
+        nch = len(frame.layout.channels) or 1
+    except Exception:
+        nch = 1
+    if not frame.format.is_planar and nch > 1 and a.shape[0] == 1:
+        a = a.reshape(-1, nch).T
+    if np.issubdtype(a.dtype, np.integer):
+        info = np.iinfo(a.dtype)
+        if info.min == 0:                       # u8 / u8p: unsigned, centred on 128
+            half = (info.max + 1) / 2.0
+            a = (a.astype(np.float32) - half) / half
+        else:
+            a = a.astype(np.float32) / float(-info.min)
+    else:
+        a = a.astype(np.float32)
+    return np.ascontiguousarray(a)
+
+
 def _load_audio(ref, start, end):
     """Returns a ComfyUI AUDIO dict, trimmed to [start, end)."""
     path = _resolve_asset(ref)
@@ -575,10 +716,8 @@ def _load_audio(ref, start, end):
             stream = container.streams.audio[0]
             sr = stream.rate
             for frame in container.decode(audio=0):
-                chunks.append(frame.to_ndarray())
+                chunks.append(_frame_planar(frame))
         data = np.concatenate(chunks, axis=-1) if chunks else np.zeros((1, 0), np.float32)
-        if data.dtype != np.float32:
-            data = data.astype(np.float32) / np.iinfo(data.dtype).max
         if data.ndim == 1:
             data = data[None, :]
         waveform = torch.from_numpy(data)
@@ -736,6 +875,13 @@ def parse_h3_data(raw):
         # Join the previous clip's UPSCALED render. Sent by the panel only
         # while the Render row's "upscale" box is on.
         "upscale": _parse_upscale(data.get("upscale")),
+        # SAVE LATENT: what Glide Video writes beside the render, chosen once in
+        # the project settings instead of on every Glide Video. The panel sends
+        # "tail" by itself during an upscale pass (the refined tail is what the
+        # next clip holds on); it reaches Glide Video through the save_latent
+        # output.
+        "save_latent": (data.get("save_latent")
+                        if data.get("save_latent") in ("full", "tail", "off") else "full"),
         "clip": clip,
         "song": _parse_song(data.get("song")),
         "audio_mode": "timeline" if data.get("audio_mode") == "timeline" else "ref",
@@ -1051,6 +1197,61 @@ try:
         return _web.json_response({"count": len(found), "bytes": sum(found.values()),
                                    "deleted": deleted, "failed": failed})
 
+    @_PromptServer.instance.routes.post("/cglide/latent_status")
+    async def _latent_status(request):
+        """For each recorded render the browser names: is there a .h3latent
+        (tail) and/or a .h3full beside it? Read-only, realpath-checked through
+        _render_path like everything else that takes a path from the browser.
+        Feeds the latent band over the clip strip."""
+        try:
+            data = await request.json()
+        except Exception:
+            return _web.json_response({"error": "body is not JSON"}, status=400)
+        clips = data.get("clips") if isinstance(data, dict) else None
+        if not isinstance(clips, list):
+            clips = []
+
+        def scan():
+            out = []
+            index = None            # basename -> (mtime, type, subfolder), built once if needed
+            for c in clips[:512]:
+                if not isinstance(c, dict):
+                    out.append(None)
+                    continue
+                org = _clean_origin(c.get("rec"))
+                how = None
+                if org is None or _render_path(org) is None:
+                    # No usable record. A project file saved before its renders
+                    # (or reopened over newer ones) knows nothing about them,
+                    # and renders made before 1.4.0 were recorded without their
+                    # folder. 1) the clip's own newest render, by the name H3
+                    # Studio gives it (<project>/<NN>_<name>_00001.mkv);
+                    # 2) the recorded file's name anywhere in output/temp.
+                    cand = _latest_for_clip(c)
+                    if cand is not None:
+                        org, how = cand, "named"
+                    elif org is not None:
+                        if index is None:
+                            index = _render_index()
+                        hit = index.get(os.path.basename(org["name"]))
+                        if hit:
+                            org = {"name": os.path.basename(org["name"]),
+                                   "subfolder": hit[2], "type": hit[1]}
+                            how = "moved"
+                found = org is not None and _render_path(org) is not None
+                out.append({"tail": found and _render_path(org, LATENT_SIDECAR) is not None,
+                            "full": found and _render_path(org, FULL_SIDECAR) is not None,
+                            "found": found,
+                            "rec": org if (how and found) else None,
+                            "how": how if found else None})
+            return out
+
+        try:
+            res = await asyncio.get_running_loop().run_in_executor(None, scan)
+        except Exception as exc:
+            return _web.json_response({"error": str(exc)}, status=500)
+        return _web.json_response({"status": res})
+
     @_PromptServer.instance.routes.get("/cglide/pick_span")
     async def _pick_span(request):
         ref = request.rel_url.query.get("file") or ""
@@ -1097,12 +1298,19 @@ class CSGlideCast:
                 "first_frame": ("IMAGE",),
                 "last_frame": ("IMAGE",),
             },
+            # Read only to catch an upscale workflow run with the upscale pass
+            # box off (see _upscale_workflow).
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
     # Reordered and trimmed in 1.4.5 (his call, saved workflows rewired once):
     # guide_frames is gone; the two conditionings sit together. 1.4.6 brought
     # width / height / length / seconds back (people DO drive their whole
-    # workflow from H3 Studio, issue from MADmotionAI) plus refine_multiplier,
+    # workflow from H3 Studio, issue from MADmotionAI) plus refine_multiplier;
+    # 1.4.8 appended save_latent (wire it into Glide Video's save_latent input),
     # all APPENDED after positive_refine so 1.4.5 workflows keep their wires.
     # LiteGraph stores links by output INDEX - from here on, append, never
     # insert, or every saved workflow is silently rewired again.
@@ -1111,10 +1319,11 @@ class CSGlideCast:
     #   samples with a splice weight, empty when nothing is held.
     RETURN_TYPES = ("LATENT", "INT", "STRING", "STRING", "AUDIO",
                     "CONDITIONING", "CONDITIONING",
-                    "INT", "INT", "INT", "FLOAT", "FLOAT")
+                    "INT", "INT", "INT", "FLOAT", "FLOAT", "STRING")
     RETURN_NAMES = ("latent", "overlap_frames", "source_video", "clip_name",
                     "locked_audio", "positive", "positive_refine",
-                    "width", "height", "length", "seconds", "refine_multiplier")
+                    "width", "height", "length", "seconds", "refine_multiplier",
+                    "save_latent")
     FUNCTION = "build"
     CATEGORY = "CGlide"
     DESCRIPTION = "MiniMax H3 director — first/last keyframes or omni references, with automatic reference tagging."
@@ -1524,6 +1733,13 @@ class CSGlideCast:
     @staticmethod
     def _load_full(up, cfg):
         """The clip's saved full latent, as (latent, frame_count, width, height)."""
+        if not up.get("src"):
+            who = clip_label(cfg) or "this clip"
+            raise FileNotFoundError(
+                "H3 Studio upscale pass: %s has no draft render recorded, so there "
+                "is no latent to upscale. The upscale pass works on a project clip "
+                "whose draft was rendered with save_latent = full. To upscale any "
+                "other take, load its .h3full with Glide Latent Load instead." % who)
         path = _render_path(up.get("src"), FULL_SIDECAR)
         if path is None:
             who = clip_label(cfg) or "this clip"
@@ -1765,8 +1981,23 @@ class CSGlideCast:
 
     # ---------------- main ----------------
 
-    def build(self, clip, vae, h3_data, audio_vae=None, first_frame=None, last_frame=None):
+    def build(self, clip, vae, h3_data, audio_vae=None, first_frame=None, last_frame=None,
+              prompt=None, unique_id=None):
         cfg = parse_h3_data(h3_data)
+        if not cfg.get("upscale"):
+            hit = _upscale_workflow(prompt, unique_id)
+            if hit and hit[0] == "hold":
+                raise ValueError(
+                    "H3 Studio: this workflow has Glide Upscale Hold, so it is an "
+                    "upscale workflow - but the \"upscale pass\" box in the Render "
+                    "row is off. H3 Studio would hand out an EMPTY latent and the "
+                    "refine would only make noise. Tick \"upscale pass\" (or bypass "
+                    "the upscale nodes to render a draft).")
+            if hit:
+                print("[H3 Studio] warning: %s takes H3 Studio's latent directly, "
+                      "but the upscale pass is off - it is upscaling an EMPTY "
+                      "latent. Tick \"upscale pass\" if this is an upscale "
+                      "workflow." % hit[1])
 
         def finish(cond, refine_cond=None):
             """Shared tail for both modes: attach the continuation, if any.
@@ -1782,7 +2013,7 @@ class CSGlideCast:
                           % (os.path.basename(up_source), up_overlap)) if up_source else ""))
                 return (latent, up_overlap, up_source, clip_label(cfg), locked_audio,
                         cond, self._without_keyframes(refine),
-                        width, height, frame_count, seconds, refine_mul)
+                        width, height, frame_count, seconds, refine_mul, "tail")
             lat = latent
             held = None
             if cfg.get("cont_latent") and cfg.get("cont"):
@@ -1809,7 +2040,8 @@ class CSGlideCast:
             return (lat, overlap, source, clip_label(cfg), locked_audio, cond,
                     self._without_keyframes(refine_cond
                                             if refine_cond is not None else cond),
-                    width, height, frame_count, seconds, refine_mul)
+                    width, height, frame_count, seconds, refine_mul,
+                    cfg.get("save_latent") or "full")
 
         width = max(CANVAS_MULTIPLE, (cfg["width"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
         height = max(CANVAS_MULTIPLE, (cfg["height"] // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)

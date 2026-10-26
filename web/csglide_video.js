@@ -386,6 +386,40 @@ function build(node) {
   return { wrap, show, setDetail };
 }
 
+/* save_latent widget: hidden while H3 Studio drives it through save_latent_in,
+ * back when that input is unplugged. Never removed - ComfyUI restores widget
+ * values by position, so taking it out would shift every saved workflow.
+ * Hidden the same three ways H3 Studio hides h3_data (v1 reads computeSize
+ * and the converted-widget type, v2 reads .hidden), and restored exactly. */
+function syncSaveLatent(node) {
+  const w = node.widgets?.find((x) => x.name === "save_latent");
+  if (!w) return;
+  const inp = node.inputs?.find((i) => i.name === "save_latent_in");
+  const linked = !!(inp && inp.link != null);
+  if (linked === !!w._glideHidden) return;
+  if (linked) {
+    w._glideOrig = { type: w.type, computeSize: w.computeSize,
+                     computeLayoutSize: w.computeLayoutSize, hidden: w.hidden,
+                     optHidden: w.options ? w.options.hidden : undefined };
+    w.type = "converted-widget";
+    w.hidden = true;
+    w.options = Object.assign({}, w.options, { hidden: true });
+    w.computeSize = () => [0, -4];
+    w.computeLayoutSize = () => ({ minHeight: 0, maxHeight: 0, minWidth: 0 });
+  } else {
+    const o = w._glideOrig || {};
+    w.type = o.type || "combo";
+    w.hidden = !!o.hidden;
+    if (w.options) w.options.hidden = o.optHidden;
+    w.computeSize = o.computeSize;
+    w.computeLayoutSize = o.computeLayoutSize;
+    if (!w.computeSize) delete w.computeSize;
+    if (!w.computeLayoutSize) delete w.computeLayoutSize;
+  }
+  w._glideHidden = linked;
+  node.setDirtyCanvas?.(true, true);
+}
+
 app.registerExtension({
   name: "CGlide.GlideVideo",
 
@@ -428,6 +462,14 @@ app.registerExtension({
 
       this.size = this.computeSize();
       if (this.size[1] < 340) this.size[1] = 340;
+      setTimeout(() => syncSaveLatent(this), 0);
+      return r;
+    };
+
+    const onConn = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function () {
+      const r = onConn?.apply(this, arguments);
+      setTimeout(() => syncSaveLatent(this), 0);
       return r;
     };
 
@@ -447,6 +489,8 @@ app.registerExtension({
       if (last) {
         setTimeout(() => this._glideVideo?.show(last), 0);
       }
+      /* links are restored with the workflow, so check after it settles */
+      setTimeout(() => syncSaveLatent(this), 0);
       return r;
     };
   },

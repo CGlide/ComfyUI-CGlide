@@ -562,6 +562,14 @@ class CSGlideVideo:
                                "CONTINUE FROM can hold it exactly (latent hold) "
                                "instead of re-encoding decoded frames.",
                 }),
+                "save_latent_in": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "Optional: H3 Studio's save_latent output. When "
+                               "wired it overrides the save_latent widget, so "
+                               "the project decides (full on drafts, tail by "
+                               "itself on the upscale pass). Unwired, the "
+                               "widget works as before.",
+                }),
                 "chain": ("STRING", {
                     "forceInput": True,
                     "tooltip": "The chain note out of Glide Join. Wire it and a "
@@ -590,7 +598,8 @@ class CSGlideVideo:
     def combine(self, images, fps, preset, filename_prefix,
                 save_output=True, save_metadata=True, fallback_on_failure=True,
                 container="auto", audio=None, chain=None, prompt=None,
-                extra_pnginfo=None, latent=None, save_latent="tail"):
+                extra_pnginfo=None, latent=None, save_latent="tail",
+                save_latent_in=None):
         banner()          # names the ffmpeg in use, once per session
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
@@ -768,6 +777,11 @@ class CSGlideVideo:
                     except OSError:
                         pass
 
+        # H3 Studio's choice wins when it is wired in
+        if save_latent_in in SAVE_LATENT_CHOICES:
+            if save_latent_in != save_latent:
+                print("[Glide Video] save_latent from H3 Studio: %s" % save_latent_in)
+            save_latent = save_latent_in
         if latent is not None and save_latent != "off":
             _save_latent_sidecar(latent, result["out_path"])
             if save_latent == "full":
