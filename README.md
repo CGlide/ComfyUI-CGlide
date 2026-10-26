@@ -18,29 +18,31 @@ the defaults are what I actually use.
 
 </a>
 <br>
-<em>THE RECITATION — a short film made with these nodes</em>
+<em>STATIC — a short film made with these nodes</em>
 
 </p align="center">
 
 
 <p align="center">
 <a href="https://youtu.be/aEUM6sihSdI">
-<img width="500" height="750" alt="Capture d&#39;écran 2026-08-17 221233" src="https://github.com/user-attachments/assets/d9984423-f965-470b-80c8-3faebffa079b" />
+<img width="515" height="848" alt="Capture d&#39;écran 2026-10-26 172212" src="https://github.com/user-attachments/assets/6ac50e05-134b-4945-a946-60b7a2502cd5" />
+
 </a>
 <br>
-<em>THE RECITATION — a short film made with these nodes</em>
+<em>Latent Clip exention - Custom audio with Inpaint - Multi clip Layout - Render whole project </em>
 
 </p align="center">
 
 ---
 
-## What's new 😎
+## What's new 
 
 - **Latent hold** — chained clips stay clean. Six links in a row and the
   colour, contrast and detail stay flat, where the old way went duller and
   crunchier at every join. [More below.](#latent-hold--chains-that-dont-cook)
 - **Project timeline with links** — 🔗 between two clips means "this one
-  continues that one". One Render button, pick what to render.
+  continues that one". See your saved latent for later upscale and clip extension -
+  One Render button, pick what to render.
 - **Song mode** — one track over the whole project. Each clip locks its own
   window of it, so H3 animates against the real song. Lay out a whole chain
   from the song in one click.
