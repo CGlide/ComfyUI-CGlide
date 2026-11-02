@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import struct
 
 import numpy as np
 from collections import deque
@@ -205,6 +206,9 @@ def _parse_upscale(raw):
         ov = 0
     return {"src": _clean_origin(raw.get("src")),
             "prev": _clean_origin(raw.get("prev")),
+            # a file in input/ to join onto instead of prev: the CONTINUE FROM
+            # slot, filled while the upscale pass was on
+            "join": raw.get("join")[:520] if isinstance(raw.get("join"), str) else "",
             "overlap": ov if ov in (5, 22, 39) else (22 if ov > 0 else 0)}
 
 
@@ -230,10 +234,10 @@ _RENDER_EXT = (".mkv", ".mp4", ".mov", ".webm")
 
 
 def _latest_for_clip(c):
-    """The newest render of one project clip, found by the name clip_label
-    gives it: output/<project>/<NN>_<name>_<counter>.<ext>. Skips preview
-    proxies and the file recorded as the clip's UPSCALE (same prefix, but it
-    is not the draft). None when nothing matches."""
+    """Every render of one project clip, newest first, found by the name
+    clip_label gives it: output/<project>/<NN>_<name>_<counter>.<ext>, as
+    [(origin, mtime)]. Skips preview proxies and the file recorded as the
+    clip's UPSCALE. None when nothing matches."""
     try:
         idx = int(c.get("index") or 0)
         cnt = int(c.get("count") or 0)
@@ -255,23 +259,68 @@ def _latest_for_clip(c):
     skip = os.path.basename(up["name"]) if isinstance(up, dict) and isinstance(up.get("name"), str) else ""
     pat = re.compile(r"^%s_\d+(%s)$" % (re.escape(stem), "|".join(re.escape(e) for e in _RENDER_EXT)),
                      re.IGNORECASE)
-    best, best_mt = None, -1.0
     try:
         names = os.listdir(folder)
     except OSError:
         return None
+    found = []
     for n in names:
         if n == skip or not pat.match(n):
             continue
         try:
-            mt = os.path.getmtime(os.path.join(folder, n))
+            found.append((os.path.getmtime(os.path.join(folder, n)), n))
         except OSError:
             continue
-        if mt > best_mt:
-            best, best_mt = n, mt
-    if best is None:
+    if not found:
         return None
-    return {"name": best, "subfolder": sub.replace("\\", "/"), "type": "output"}
+    found.sort(reverse=True)
+    sub = sub.replace("\\", "/")
+    return [({"name": n, "subfolder": sub, "type": "output"}, mt) for mt, n in found]
+
+
+def _latent_hw(path):
+    """(h, w) of the "video" tensor in a .h3latent / .h3full, from the
+    safetensors header alone - nothing is loaded."""
+    try:
+        with open(path, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            if n <= 0 or n > 16 * 1024 * 1024:
+                return None
+            header = json.loads(f.read(n))
+        shape = (header.get("video") or {}).get("shape")
+        if isinstance(shape, list) and len(shape) == 5:
+            return int(shape[3]), int(shape[4])
+    except Exception:
+        pass
+    return None
+
+
+def _draft_check(org, canvas_hw):
+    """True when the render's saved latent is canvas-sized (a draft), False
+    when it is another size (an upscale), None when there is no latent to tell."""
+    if not canvas_hw:
+        return None
+    for ext in (FULL_SIDECAR, LATENT_SIDECAR):
+        path = _render_path(org, ext)
+        if path:
+            hw = _latent_hw(path)
+            if hw:
+                return hw == canvas_hw
+    return None
+
+
+def _canvas_hw(c):
+    """The clip's canvas in latent cells (pixels / 16, after the node's own
+    multiple-of-32 floor), or None when the browser did not say."""
+    try:
+        w, h = int(c.get("width") or 0), int(c.get("height") or 0)
+    except Exception:
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    w = max(CANVAS_MULTIPLE, (w // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+    h = max(CANVAS_MULTIPLE, (h // CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+    return h // 16, w // 16
 
 
 def _render_index(limit=50000):
@@ -859,6 +908,10 @@ def parse_h3_data(raw):
         # Multiplier for the refine pass's references ONLY. 1.0 = today's
         # behaviour and nothing extra is encoded. See _refs.
         "ref_refine_scale": max(1.0, min(4.0, float(data.get("ref_refine_scale") or 1.0))),
+        # UPSCALE TO: the size width/height go out as in an upscale pass.
+        # 0 = not set, and the old draft x refine multiplier is used instead.
+        "up_width": max(0, min(8192, int(float(data.get("up_width") or 0)))),
+        "up_height": max(0, min(8192, int(float(data.get("up_height") or 0)))),
         "prompt": str(data.get("prompt") or ""),
         "first": one("first"),
         "last": one("last"),
@@ -1220,14 +1273,36 @@ try:
                     continue
                 org = _clean_origin(c.get("rec"))
                 how = None
-                if org is None or _render_path(org) is None:
+                canvas = _canvas_hw(c)
+                cands = _latest_for_clip(c) or []
+                rec_path = _render_path(org) if org is not None else None
+                # The newest render of this clip that is provably a DRAFT (its
+                # latent is canvas-sized; an upscale shares the name pattern
+                # but not the size).
+                newest_draft = next(((o, mt) for o, mt in cands
+                                     if _draft_check(o, canvas) is True), None)
+                if rec_path is not None:
+                    # Valid record - but another workflow (or a project file
+                    # saved before the render) can be a take behind. Move it
+                    # only to a NEWER, provably draft render - and never when
+                    # the take was picked by hand from the Takes list.
+                    if newest_draft is not None and not c.get("pin"):
+                        o, mt = newest_draft
+                        try:
+                            rec_mt = os.path.getmtime(rec_path)
+                        except OSError:
+                            rec_mt = 0.0
+                        if o["name"] != os.path.basename(rec_path) and mt > rec_mt + 1.0:
+                            org, how = o, "newer"
+                else:
                     # No usable record. A project file saved before its renders
                     # (or reopened over newer ones) knows nothing about them,
                     # and renders made before 1.4.0 were recorded without their
-                    # folder. 1) the clip's own newest render, by the name H3
-                    # Studio gives it (<project>/<NN>_<name>_00001.mkv);
-                    # 2) the recorded file's name anywhere in output/temp.
-                    cand = _latest_for_clip(c)
+                    # folder. 1) the clip's newest draft, or its newest render
+                    # when none can be told apart, by the name H3 Studio gives
+                    # it (<project>/<NN>_<name>_00001.mkv); 2) the recorded
+                    # file's name anywhere in output/temp.
+                    cand = newest_draft[0] if newest_draft else (cands[0][0] if cands else None)
                     if cand is not None:
                         org, how = cand, "named"
                     elif org is not None:
@@ -1239,11 +1314,18 @@ try:
                                    "subfolder": hit[2], "type": hit[1]}
                             how = "moved"
                 found = org is not None and _render_path(org) is not None
+                # The clip's recorded UPSCALE: is its tail latent there? That is
+                # what the next clip's upscale holds its seam on.
+                up = _clean_origin(c.get("up")) if isinstance(c.get("up"), dict) \
+                    and c["up"].get("subfolder") is not None else None
+                up_found = up is not None and _render_path(up) is not None
                 out.append({"tail": found and _render_path(org, LATENT_SIDECAR) is not None,
                             "full": found and _render_path(org, FULL_SIDECAR) is not None,
                             "found": found,
                             "rec": org if (how and found) else None,
-                            "how": how if found else None})
+                            "how": how if found else None,
+                            "up_found": up_found,
+                            "up_tail": up_found and _render_path(up, LATENT_SIDECAR) is not None})
             return out
 
         try:
@@ -1251,6 +1333,116 @@ try:
         except Exception as exc:
             return _web.json_response({"error": str(exc)}, status=500)
         return _web.json_response({"status": res})
+
+    @_PromptServer.instance.routes.post("/cglide/assemble")
+    async def _assemble(request):
+        """ASSEMBLE FILM: the project's clips, in order, into one file - each
+        cut where the next one took over, encoded once with the given preset.
+        Streams one frame at a time (csglide_assemble.py), so RAM stays flat
+        whatever the film's length. Paths come in as recorded renders and go
+        through _render_path like everything else the browser names."""
+        try:
+            data = await request.json()
+        except Exception:
+            return _web.json_response({"error": "body is not JSON"}, status=400)
+        if not isinstance(data, dict) or not isinstance(data.get("clips"), list):
+            return _web.json_response({"error": "no clips"}, status=400)
+        try:
+            from . import csglide_assemble as _asm
+        except ImportError:
+            import csglide_assemble as _asm
+        clips, missing = [], []
+        for c in data["clips"][:512]:
+            if not isinstance(c, dict):
+                continue
+            org = _clean_origin(c.get("rec"))
+            path = _render_path(org) if org is not None else None
+            label = str(c.get("label") or (org or {}).get("name") or "?")[:120]
+            if path is None:
+                missing.append(label)
+                continue
+            try:
+                frames = int(c.get("frames") or 0)
+                overlap = int(c.get("overlap") or 0)
+            except Exception:
+                frames, overlap = 0, 0
+            clips.append({"path": path, "linked": bool(c.get("linked")),
+                          "frames": frames, "overlap": overlap, "label": label})
+        if missing:
+            return _web.json_response({"error": "no render found for: " + ", ".join(missing)},
+                                      status=400)
+        project = re.sub(r"[^\w\- ]+", "_", str(data.get("project") or "film")).strip() or "film"
+        preset = str(data.get("preset") or "")
+        container = str(data.get("container") or "auto")
+        try:
+            fps = float(data.get("fps") or FPS)
+        except Exception:
+            fps = float(FPS)
+        prefix = "%s/%s_film%s" % (project, project, "_upscale" if data.get("upscale") else "")
+
+        def work():
+            return _asm.assemble(clips, preset, container=container, fps=fps, prefix=prefix)
+        try:
+            res = await asyncio.get_running_loop().run_in_executor(None, work)
+        except Exception as exc:
+            print("[Assemble] failed: %s" % exc)
+            return _web.json_response({"error": str(exc)}, status=500)
+        res = dict(res)
+        res.pop("path", None)
+        res["type"] = "output"
+        return _web.json_response(res)
+
+    @_PromptServer.instance.routes.post("/cglide/clip_takes")
+    async def _clip_takes(request):
+        """Every render of one project clip, newest first, for the Takes list
+        in the clip's right-click menu: name, when, the resolution of its
+        saved latent and which latents sit beside it. Read-only."""
+        try:
+            data = await request.json()
+        except Exception:
+            return _web.json_response({"error": "body is not JSON"}, status=400)
+        c = data.get("clip") if isinstance(data, dict) else None
+        if not isinstance(c, dict):
+            return _web.json_response({"takes": []})
+
+        def scan():
+            up = c.get("up")
+            up_name = os.path.basename(up["name"]) if isinstance(up, dict) and isinstance(up.get("name"), str) else ""
+            look = dict(c)
+            look["up"] = None                  # list the upscale too, flagged
+            cands = list(_latest_for_clip(look) or [])
+            rec = _clean_origin(c.get("rec"))
+            if rec is not None and _render_path(rec) is not None \
+                    and not any(o["name"] == rec["name"] for o, _ in cands):
+                try:                           # recorded somewhere else: list it too
+                    cands.append((rec, os.path.getmtime(_render_path(rec))))
+                except OSError:
+                    pass
+                cands.sort(key=lambda x: -x[1])
+            # Only the LAST upscale is recorded, but every upscale pass leaves
+            # a render with the clip's name: tail only (the pass always saves
+            # the tail) and bigger than the clip's canvas. Those are flagged
+            # too, so an old upscale can't be picked as a draft.
+            canvas = _canvas_hw(c)
+            out = []
+            for o, mt in cands[:40]:
+                full = _render_path(o, FULL_SIDECAR)
+                tail = _render_path(o, LATENT_SIDECAR)
+                hw = _latent_hw(full or tail) if (full or tail) else None
+                is_up = (o["name"] == up_name
+                         or (hw is not None and canvas is not None and full is None
+                             and hw[0] * hw[1] > canvas[0] * canvas[1]))
+                out.append({"name": o["name"], "subfolder": o["subfolder"], "type": o["type"],
+                            "mtime": mt, "full": full is not None, "tail": tail is not None,
+                            "w": hw[1] * 16 if hw else 0, "h": hw[0] * 16 if hw else 0,
+                            "upscale": is_up})
+            return out
+
+        try:
+            res = await asyncio.get_running_loop().run_in_executor(None, scan)
+        except Exception as exc:
+            return _web.json_response({"error": str(exc)}, status=500)
+        return _web.json_response({"takes": res})
 
     @_PromptServer.instance.routes.get("/cglide/pick_span")
     async def _pick_span(request):
@@ -2007,13 +2199,29 @@ class CSGlideCast:
             positive_refine instead of the stripped copy of cond."""
             if up:
                 refine = refine_cond if refine_cond is not None else cond
-                print("[H3 Studio] upscale pass: %s, %d frames%s"
-                      % (clip_label(cfg) or "clip", frame_count,
+                # width / height go out as the TARGET size, for an upscaler that
+                # reads its size from them (MMH3 Latent Upscale with Model
+                # Params). They used to go out as the draft size, which sized the
+                # take straight back to the draft. The target is the clip's
+                # UPSCALE TO setting; a clip without one falls back to the draft
+                # latent times the refine multiplier. On the 32 grid either way.
+                g = CANVAS_MULTIPLE
+                if cfg.get("up_width") and cfg.get("up_height"):
+                    out_w = max(g, int(round(cfg["up_width"] / g)) * g)
+                    out_h = max(g, int(round(cfg["up_height"] / g)) * g)
+                else:
+                    out_w = max(g, int(round(width * refine_mul / g)) * g)
+                    out_h = max(g, int(round(height * refine_mul / g)) * g)
+                print("[H3 Studio] upscale pass: %s, %d frames, %dx%d -> %dx%d (%s)%s"
+                      % (clip_label(cfg) or "clip", frame_count, width, height,
+                         out_w, out_h,
+                         "upscale to" if cfg.get("up_width") and cfg.get("up_height")
+                         else "x%g refine multiplier" % refine_mul,
                          (", joins onto %s (%d overlap)"
                           % (os.path.basename(up_source), up_overlap)) if up_source else ""))
                 return (latent, up_overlap, up_source, clip_label(cfg), locked_audio,
                         cond, self._without_keyframes(refine),
-                        width, height, frame_count, seconds, refine_mul, "tail")
+                        out_w, out_h, frame_count, seconds, refine_mul, "tail")
             lat = latent
             held = None
             if cfg.get("cont_latent") and cfg.get("cont"):
@@ -2056,11 +2264,43 @@ class CSGlideCast:
             latent, frame_count, width, height = self._load_full(up, cfg)
             seconds = frame_count / FPS
             cfg["cont"] = None                     # the take already holds its join
-            up_source = _render_path(up["prev"]) or ""
+            if up.get("join"):
+                # The slot's ORIGINAL render first: its .h3latent sits beside it
+                # in output/, and Glide Upscale Hold reads the seam from that.
+                # The copy in input/ has no latent next to it, so joining onto
+                # the copy fell back to a pixel seam - visibly worse. The copy is
+                # only the fallback for when the original was deleted.
+                up_source = _render_path(up["prev"]) or ""
+                if up_source:
+                    if _render_path(up["prev"], LATENT_SIDECAR) is None:
+                        print("[H3 Studio] upscale pass: %s has no .h3latent beside it - "
+                              "the seam can't be held on the latent"
+                              % os.path.basename(up_source))
+                else:
+                    up_source = _resolve_asset(up["join"]) or ""
+                    if up_source:
+                        print("[H3 Studio] upscale pass: the original of %s is gone - "
+                              "joining onto the copy in input/, which has no latent "
+                              "beside it, so the seam is a pixel join" % up["join"])
+                if not up_source:
+                    raise FileNotFoundError(
+                        "H3 Studio upscale pass: %s joins onto %r from its CONTINUE FROM "
+                        "slot, which is not in input/ any more. Put the upscale back in "
+                        "that slot, or clear it to join onto the previous clip's recorded "
+                        "upscale." % (clip_label(cfg) or "this clip", up["join"]))
+                print("[H3 Studio] upscale pass: joining onto %s (CONTINUE FROM)"
+                      % os.path.basename(up_source))
+            else:
+                up_source = _render_path(up["prev"]) or ""
             up_overlap = up["overlap"] if up_source else 0
-            if up["prev"] and not up_source:
-                print("[H3 Studio] upscale: the previous clip's upscaled render %r "
-                      "is gone - this clip goes out unjoined" % up["prev"]["name"])
+            if up["prev"] and not up_source and not up.get("join"):  # (join handled above)
+                # Used to go out unjoined with a console line, which in a chain
+                # is a broken seam nobody asked for. Stop and say how to pick.
+                raise FileNotFoundError(
+                    "H3 Studio upscale pass: %s joins onto the previous clip's upscale "
+                    "%r, which is gone. Put the upscale you want in this clip's "
+                    "CONTINUE FROM slot, or right-click the previous clip in the strip "
+                    "-> Takes -> click an upscale, then render again." % (clip_label(cfg) or "this clip", up["prev"]["name"]))
 
         if cfg["mode"] == "fl2va":
             first = first_frame if first_frame is not None else (

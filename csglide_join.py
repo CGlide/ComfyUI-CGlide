@@ -26,6 +26,7 @@ gain-plus-lift flicker: mean matching left 0.021 pixel error, affine left
 0.000.
 """
 
+import collections
 import os
 
 import numpy as np
@@ -38,6 +39,13 @@ except Exception:  # pragma: no cover
 
 
 SEAM_MODES = ["early_cut", "early_scurve", "hard_cut"]
+OUTPUT_MODES = ["film", "clip"]
+
+# The line Glide Join adds to the chain note, which Glide Video writes into the
+# file's "description". Assemble film reads the LAST one in a clip's file: how
+# many frames at the end of the previous clip this clip replaces, and whether
+# the file is a whole film (output = film) or one clip (output = clip).
+JOIN_MARK = "[cglide-join]"
 FIT_SIZE = 48          # frames are averaged to this before fitting
 ALIGN_SEARCH = 2       # frames either way when checking correspondence
 
@@ -158,6 +166,78 @@ def _load_frames(path):
     if not i:
         raise ValueError("Glide Join: no video frames decoded from %s" % path)
     return torch.from_numpy(out[:i])
+
+
+def _load_tail(path, n):
+    """The LAST n frames of a clip, as float RGB - nothing before them is kept.
+
+    This is what makes output = clip cheap: the colour fit, the frame
+    correspondence check and the s-curve only ever look at the overlap, so
+    there is no reason to hold the rest of the source in memory. Decoding
+    still has to run from the last keyframe before the tail (that is how
+    video works), so it seeks there first; a few seconds of decode, kept in a
+    deque of n frames, whatever the source's length.
+
+    Same pixels as _load_frames on the same frames: same rgb48le path, same
+    /65535. If the seek lands too late (a file without a usable index), it
+    starts again from the top - slower, still n frames in memory.
+    """
+    n = max(1, int(n))
+
+    def run(seek_to):
+        depth, fmt = 65535.0, "rgb48le"
+        keep = collections.deque(maxlen=n)
+        total = 0
+        with av.open(path) as container:
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            if seek_to is not None:
+                container.seek(seek_to, stream=stream, backward=True, any_frame=False)
+            first_pts = None
+            for frame in container.decode(video=0):
+                if first_pts is None:
+                    first_pts = frame.pts
+                if fmt == "rgb48le":
+                    try:
+                        a = frame.to_ndarray(format="rgb48le")
+                    except Exception as e:
+                        if total:
+                            raise
+                        print("[Glide Join] 16-bit decode unavailable (%s), "
+                              "falling back to 8-bit" % e)
+                        fmt, depth = "rgb24", 255.0
+                        a = frame.to_ndarray(format="rgb24")
+                else:
+                    a = frame.to_ndarray(format=fmt)
+                f = a.astype(np.float32)
+                f /= depth
+                keep.append(f)
+                total += 1
+            return keep, total, first_pts
+
+    seek_to = None
+    try:
+        with av.open(path) as c:
+            st = c.streams.video[0]
+            if st.duration and st.time_base and st.average_rate:
+                dur = float(st.duration * st.time_base)
+                back = (n + 48) / float(st.average_rate) + 2.0
+                if dur > back + 1.0:
+                    seek_to = int((dur - back) / float(st.time_base))
+            elif c.duration:
+                dur = c.duration / 1e6
+                back = n / 24.0 + 4.0
+                if dur > back + 1.0:
+                    seek_to = int((dur - back) / float(st.time_base or 1e-6))
+    except Exception:
+        seek_to = None
+
+    keep, total, first_pts = run(seek_to)
+    if seek_to is not None and (len(keep) < n or first_pts is None):
+        keep, total, _ = run(None)          # the seek was no good: from the top
+    if not keep:
+        raise ValueError("Glide Join: no video frames decoded from %s" % path)
+    return torch.from_numpy(np.stack(list(keep)))
 
 
 def _load_audio(path):
@@ -309,6 +389,14 @@ def _scurve(n):
     return (w - float(w[0])) / (float(w[-1]) - float(w[0]))
 
 
+def _mark(chain, output, trim, ov, mode):
+    """The chain note plus this join's own line, read back by Assemble film."""
+    line = "%s output=%s trim_prev=%d overlap=%d mode=%s" % (
+        JOIN_MARK, output, int(trim), int(ov), mode)
+    chain = (chain or "").strip()
+    return (chain + "\n" + line) if chain else line
+
+
 class CSGlideJoin:
     @classmethod
     def INPUT_TYPES(cls):
@@ -365,6 +453,22 @@ class CSGlideJoin:
                                "`audio`, so the joined track carries the real file "
                                "rather than the VAE's copy, and H3's own sound "
                                "everywhere else. Empty when nothing was held."}),
+                # Appended LAST: widgets are restored by position, so anything
+                # inserted above would shift every saved workflow's values.
+                # Old workflows have no value here and take the default, clip:
+                # on purpose, so an update fixes them too. film is still here
+                # for anyone joining by hand without H3 Studio's Assemble.
+                "output": (OUTPUT_MODES, {
+                    "default": "clip",
+                    "tooltip": "clip (default): only THIS clip, from its seam on, "
+                               "with the same seam and colour match. Reads only the "
+                               "end of the source, so every link costs the same. "
+                               "H3 Studio's Render all assembles the film at the end "
+                               "(or Assemble in its project menu).\n"
+                               "film: the whole film so far, the source with this "
+                               "clip joined on - the old behaviour. Decodes the WHOLE "
+                               "source, so RAM grows with every link: at 1080p a "
+                               "minute of film is ~35 GB."}),
             },
         }
 
@@ -547,7 +651,7 @@ class CSGlideJoin:
 
     def join(self, source_video, images, overlap_frames, seam_mode,
              seam_blend_frames, match_levels, audio=None, fps=24.0, match_tail=True,
-             locked_audio=None):
+             locked_audio=None, output="clip"):
         audio = self._splice_locked(audio, locked_audio)
 
         # No source clip means this is not a continuation at all - the CONTINUE
@@ -562,8 +666,12 @@ class CSGlideJoin:
 
         path = _open_source(source_video)
         chain = _read_chain(path)
-        src = _load_frames(path)
         ov = max(0, int(overlap_frames))
+        if output == "clip":
+            return self._join_clip(path, chain, images, ov, seam_mode,
+                                   int(seam_blend_frames), bool(match_levels),
+                                   audio, float(fps), bool(match_tail))
+        src = _load_frames(path)
 
         out = self._join_images(src, images, ov, seam_mode,
                                 int(seam_blend_frames), bool(match_levels))
@@ -578,7 +686,66 @@ class CSGlideJoin:
         print("[Glide Join] %s: %d + %d frames, overlap %d -> %d frames (%.3fs)"
               % (seam_mode, src.shape[0], images.shape[0], ov,
                  out.shape[0], out.shape[0] / float(fps)))
-        return (out, out_audio, int(out.shape[0]), chain)
+        return (out, out_audio, int(out.shape[0]),
+                _mark(chain, "film", 0, ov, seam_mode))
+
+    # ---------------- output = clip ----------------
+
+    @staticmethod
+    def _trim_prev(ov, mode):
+        """How many frames at the END of the source this clip replaces."""
+        return 0 if (ov <= 0 or mode == "hard_cut") else ov
+
+    def _clip_images(self, tail, ext, ov, mode, blend, match):
+        """This clip's own frames, exactly as they appear in the film.
+
+        Runs the SAME _join_images as output = film, on the source's last
+        frames instead of all of it - every colour fit, the correspondence
+        check and the s-curve only ever read src[-ov:] (hard_cut: src[-1]),
+        so the frames that come out are identical. Then drops whatever of the
+        source came out in front of them. By construction, film mode's output
+        equals source[:-trim] + this.
+        """
+        out = self._join_images(tail, ext, ov, mode, blend, match)
+        return out[tail.shape[0] - self._trim_prev(ov, mode):]
+
+    def _clip_audio(self, ext_audio, ext_skip, frames, fps, match_tail):
+        """This clip's sound from its seam on: the same cut as film mode makes
+        on the continuation's side, and match_tail to the clip's own frames."""
+        if ext_audio is None:
+            return None
+        rate = int(ext_audio["sample_rate"])
+        wf = ext_audio["waveform"]
+        wf = wf[0] if wf.dim() == 3 else wf
+        skip = int(round(max(0, ext_skip) / fps * rate))
+        wf = wf[..., skip:] if skip < wf.shape[-1] else wf[..., :0]
+        if match_tail:
+            want = int(round(frames / fps * rate))
+            have = int(wf.shape[-1])
+            if have > want:
+                wf = wf[..., :want]
+            elif have < want:
+                wf = torch.cat([wf, torch.zeros(wf.shape[0], want - have,
+                                                dtype=wf.dtype)], dim=-1)
+        return {"waveform": wf[None].contiguous(), "sample_rate": rate}
+
+    def _join_clip(self, path, chain, images, ov, mode, blend, match,
+                   audio, fps, match_tail):
+        # ov frames for the fits; at least one so hard_cut / no-overlap still
+        # has the source's last frame to measure the cut against
+        tail = _load_tail(path, max(1, ov))
+        if ov > tail.shape[0]:
+            raise ValueError("Glide Join: overlap is %d frames but the source only "
+                             "has %d." % (ov, tail.shape[0]))
+        out = self._clip_images(tail, images, ov, mode, blend, match)
+        trim = self._trim_prev(ov, mode)
+        ext_skip = ov if (mode == "hard_cut" and ov > 0) else 0
+        out_audio = self._clip_audio(audio, ext_skip, out.shape[0], fps, match_tail)
+        print("[Glide Join] %s, output = clip: %d frames (%.3fs), replaces the last "
+              "%d of %s - read %d frames of it, not the whole file"
+              % (mode, out.shape[0], out.shape[0] / fps, trim,
+                 os.path.basename(path), tail.shape[0]))
+        return (out, out_audio, int(out.shape[0]), _mark(chain, "clip", trim, ov, mode))
 
     @classmethod
     def IS_CHANGED(cls, source_video, **kwargs):

@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-10-26f - latent band finds unrecorded renders";
+const H3_STUDIO_UI_BUILD = "2026-11-01d - auto Assemble after Render all, film shown in Glide Video";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -185,7 +185,10 @@ function blankState() {
     width: 1344, height: 768,
     length: 243,
     ref_image_size: "match",
-    ref_refine_scale: 1,
+    ref_refine_scale: 2,
+    /* UPSCALE TO: what width/height go out as in an upscale pass. 0 = not
+       set, and the node falls back to the draft latent x refine multiplier. */
+    up_width: 0, up_height: 0,
     pace: 2.5,          /* legacy: the speech-budget slider is gone, kept so old .h3.json still parses */
     prompt: "",
     /* "ref": the audio slots are references (<Audio j>), as always.
@@ -217,7 +220,11 @@ function parseInitial(raw) {
   if (d.ref_image_size === "max") out.ref_image_size = "max";
   {
     const m = Number(d.ref_refine_scale);
-    out.ref_refine_scale = Number.isFinite(m) ? Math.min(4, Math.max(1, m)) : 1;
+    out.ref_refine_scale = Number.isFinite(m) ? Math.min(4, Math.max(1, m)) : 2;
+  }
+  {
+    const uw = Math.round(+d.up_width || 0), uh = Math.round(+d.up_height || 0);
+    if (uw >= 32 && uh >= 32) { out.up_width = Math.min(8192, uw); out.up_height = Math.min(8192, uh); }
   }
   if (Number.isFinite(+d.pace) && +d.pace > 0) out.pace = Math.min(4, Math.max(1, +d.pace));
   if (typeof d.prompt === "string") out.prompt = d.prompt;
@@ -281,6 +288,10 @@ function parseInitial(raw) {
        is re-adopted. */
     if (c.chroma) out.cont.chroma = String(c.chroma);
     if (c.codec) out.cont.codec = String(c.codec);
+    /* Filled while the upscale pass was on: an upscale to join onto, not a
+       draft guide. Holds WHEN it was filled, so the newer of this and the
+       previous clip's recorded upscale wins. */
+    if (Number(c.upJoin) > 0) out.cont.upJoin = Number(c.upJoin);
   }
   return out;
 }
@@ -589,6 +600,43 @@ const CSS = `
   border-radius:7px; padding:4px 0; font-size:10.5px; color:var(--h3-dim); }
 .gcast-cpal .auto:hover { color:var(--h3-txt); border-color:var(--h3-accent); }
 .gcast-cpal .auto.on { color:var(--h3-accent); border-color:var(--h3-accent); }
+/* Takes: every render of the clip, pick the one the upscale pass uses */
+.gcast-cpal .tk-h { font-size:9.5px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--h3-dim); padding:3px 2px 0; border-top:1px solid var(--h3-line); margin-top:1px; }
+.gcast-cpal .tk { display:flex; flex-direction:column; gap:2px; min-width:206px;
+  max-height:220px; overflow-y:auto; }
+.gcast-cpal .tk .msg { font-size:10.5px; color:var(--h3-dim); padding:3px 4px; }
+.gcast-cpal .tk button { all:unset; pointer-events:auto; cursor:pointer; box-sizing:border-box;
+  display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:6px;
+  font-size:10.5px; color:var(--h3-txt); border:1px solid transparent;
+  font-family:ui-monospace,Consolas,monospace; }
+.gcast-cpal .tk button:hover { background:var(--h3-raise); border-color:var(--h3-line); }
+.gcast-cpal .tk button.on { border-color:#FF9CF9; background:#FF9CF91a; }
+.gcast-cpal .tk button.dis { cursor:default; opacity:.45; }
+.gcast-cpal .tk button.dis:hover { background:none; border-color:transparent; }
+/* an upscale take: pickable, but as the one the NEXT clip joins onto, not as
+   a draft. Dimmed until it is the joined one. */
+.gcast-cpal .tk button.upk:not(.on) { opacity:.6; }
+.gcast-cpal .tk button.upk:not(.on):hover { opacity:1; }
+.gcast-cpal .tk button.upk.on { border-color:#FFA931; }
+.gcast-cpal .tk button.upk.on .dot { background:#FFA931; border-color:#FFA931; }
+.gcast-cpal .tk button.upk.on .lt.up { color:#FFA931; }
+.gcast-cpal .tk .dot { width:7px; height:7px; border-radius:50%; flex:none;
+  box-shadow:inset 0 0 0 1px var(--h3-line); }
+.gcast-cpal .tk button.on .dot { background:#FF9CF9; box-shadow:none; }
+.gcast-cpal .tk .res { min-width:72px; }
+/* same reading as the band on the strip: full = the whole slot, tail = a
+   small chunk at its end, with the word in pink beside it */
+.gcast-cpal .tk .lt { position:relative; box-sizing:border-box; width:50px; flex:none;
+  font-size:9.5px; line-height:15px; padding:0 4px; border-radius:3px; color:#1b1b1b;
+  background:#FF9CF9; text-align:center; }
+.gcast-cpal .tk .lt.tail { background:none; color:#FF9CF9; text-align:left; padding:0; }
+.gcast-cpal .tk .lt.tail::after { content:""; position:absolute; right:0; top:0; bottom:0;
+  width:9px; border-radius:3px; background:#FF9CF9; }
+.gcast-cpal .tk .lt.up { width:auto; background:none; color:#FF9CF9; padding:0; text-align:left; }
+.gcast-cpal .tk .lt.none { width:auto; background:none; color:var(--h3-dim); padding:0;
+  text-align:left; }
+.gcast-cpal .tk .when { margin-left:auto; color:var(--h3-dim); font-size:9.5px; }
 
 .gcast-label { font-size:9.5px; letter-spacing:.13em; text-transform:uppercase;
   color:var(--h3-label); font-weight:600; }
@@ -622,6 +670,88 @@ const CSS = `
   -webkit-background-clip:text; background-clip:text;
   opacity:.1; }
 .gcast-modebar > * { position:relative; z-index:1; }
+/* UPSCALE MODE banner. Replaces the H3 STUDIO wordmark while the upscale pass
+ * is ticked: that box turns this workflow into "refine saved latents", and
+ * forgetting it in a draft workflow renders nothing new. Diagonal stripes
+ * drifting behind, two glowing triangles and
+ * the text flickering between WARNING! and UPSCALE MODE. A background layer:
+ * the mode switch and the model hint stay on top and clickable. */
+/* H3 STUDIO banner, the normal-mode twin of the UPSCALE MODE one: same
+ * stripes, dots and glowing lettering, but in Glide Picture's teal and with
+ * nothing moving. It replaces the old interlaced watermark. A background
+ * layer like the upscale one: the mode switch and the model hint stay on top. */
+/* Follows the mode accent, so it is the same blue as the Omni button (and the
+   green of First / last in fl2va). Black at both ends, colour in the middle:
+   the stripes, the grain and a hairline top and bottom all fade out sideways. */
+.gcast-modebar:not(.upmode) { border-color:#000; border-left:1px solid #000;
+  background:linear-gradient(90deg, #050505 0%,
+    color-mix(in srgb, var(--h3-accent) 12%, #0a0a0a) 32%,
+    color-mix(in srgb, var(--h3-accent) 20%, #0a0a0a) 50%,
+    color-mix(in srgb, var(--h3-accent) 12%, #0a0a0a) 68%, #050505 100%); }
+.gcast-modebar::after { display:none; }
+.gcast-modebar > .gcast-idbanner { position:absolute; inset:0; z-index:0;
+  pointer-events:none; overflow:hidden; }
+.gcast-modebar.upmode > .gcast-idbanner { display:none; }
+.gcast-idbanner .stripes, .gcast-idbanner .dots {
+  -webkit-mask-image:linear-gradient(90deg, transparent 4%, #000 34%, #000 66%, transparent 96%);
+  mask-image:linear-gradient(90deg, transparent 4%, #000 34%, #000 66%, transparent 96%); }
+.gcast-idbanner .stripes { position:absolute; inset:0;
+  background:repeating-linear-gradient(135deg,
+    color-mix(in srgb, var(--h3-accent) 13%, transparent) 0px,
+    color-mix(in srgb, var(--h3-accent) 13%, transparent) 10px,
+    transparent 10px, transparent 20px); }
+.gcast-idbanner .dots { position:absolute; inset:0; opacity:.28;
+  background:radial-gradient(color-mix(in srgb, var(--h3-accent) 60%, #fff) .6px, transparent .9px) 0 0 / 4px 4px; }
+.gcast-idbanner .hl { position:absolute; left:0; right:0; height:1px;
+  background:linear-gradient(90deg, transparent 10%, var(--h3-accent) 50%, transparent 90%);
+  opacity:.55; }
+.gcast-idbanner .hl.t { top:0; } .gcast-idbanner .hl.b { bottom:0; opacity:.3; }
+.gcast-idbanner .txt { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+  white-space:nowrap;
+  font-family:"Bahnschrift","DIN Alternate","Oswald",Impact,ui-sans-serif,system-ui,sans-serif;
+  font-size:21px; font-weight:800; letter-spacing:.2em;
+  color:color-mix(in srgb, var(--h3-accent) 70%, #fff);
+  text-shadow:0 0 4px color-mix(in srgb, var(--h3-accent) 90%, transparent),
+              0 0 14px color-mix(in srgb, var(--h3-accent) 55%, transparent),
+              0 0 30px color-mix(in srgb, var(--h3-accent) 25%, transparent); }
+.gcast-modebar.upmode { border-left-color:#ffc233;
+  background:linear-gradient(90deg, #3a2a10, #24190b 70%); }
+.gcast-modebar.upmode::after { display:none; }
+.gcast-modebar > .gcast-upbanner { position:absolute; inset:0; z-index:0; display:none;
+  pointer-events:none; overflow:hidden; }
+.gcast-modebar.upmode > .gcast-upbanner { display:block; }
+.gcast-upbanner .stripes { position:absolute; inset:0;
+  background:repeating-linear-gradient(135deg, rgba(255,194,51,.11) 0px, rgba(255,194,51,.11) 10px,
+             rgba(0,0,0,0) 10px, rgba(0,0,0,0) 20px);
+  background-size:28.284px 28.284px; animation:gcastUpStripes 1.6s linear infinite; }
+.gcast-upbanner .dots { position:absolute; inset:0; opacity:.35;
+  background:radial-gradient(rgba(255,210,110,.5) .6px, transparent .9px) 0 0 / 4px 4px; }
+.gcast-upbanner .mid { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+  display:flex; align-items:center; gap:14px; }
+.gcast-upbanner .tri { width:24px; height:22px; color:#ffc233;
+  filter:drop-shadow(0 0 3px rgba(255,190,40,.9)) drop-shadow(0 0 8px rgba(255,150,0,.5));
+  animation:gcastUpGlow 1.1s ease-in-out infinite alternate; }
+.gcast-upbanner .txt { position:relative; width:250px; height:33px; }
+.gcast-upbanner .txt > div { position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; white-space:nowrap; opacity:0;
+  font-family:"Bahnschrift","DIN Alternate","Oswald",Impact,ui-sans-serif,system-ui,sans-serif;
+  color:#ffcf4a; text-shadow:0 0 5px rgba(255,180,40,.85), 0 0 14px rgba(255,140,0,.45); }
+.gcast-upbanner .txt .a { font-size:21px; font-weight:800; letter-spacing:.16em;
+  animation:gcastUpA 4.4s linear infinite; }
+.gcast-upbanner .txt .b { animation:gcastUpB 4.4s linear infinite; }
+.gcast-upbanner .txt .b b { font-size:15px; font-weight:800; letter-spacing:.2em; line-height:1.05; }
+.gcast-upbanner .txt .b i { font-style:normal; font-size:8px; letter-spacing:.14em;
+  text-transform:uppercase; opacity:.9; margin-top:2px; }
+@keyframes gcastUpStripes { to { background-position:28.284px 0; } }
+@keyframes gcastUpGlow { from { opacity:.75; } to { opacity:1; } }
+@keyframes gcastUpA { 0% { opacity:0; } 2% { opacity:.85; } 3% { opacity:.2; } 5%, 44% { opacity:1; }
+  46% { opacity:.25; } 47% { opacity:.9; } 49%, 100% { opacity:0; } }
+@keyframes gcastUpB { 0%, 50% { opacity:0; } 52% { opacity:.85; } 53% { opacity:.2; } 55%, 94% { opacity:1; }
+  96% { opacity:.25; } 97% { opacity:.9; } 99%, 100% { opacity:0; } }
+@media (prefers-reduced-motion: reduce) {
+  .gcast-upbanner .stripes, .gcast-upbanner .tri { animation:none; }
+  .gcast-upbanner .txt .a { animation:none; opacity:0; }
+  .gcast-upbanner .txt .b { animation:none; opacity:1; } }
 .gcast-seg { display:flex; background:var(--h3-bg); border:1px solid var(--h3-line);
   border-radius:7px; padding:2px; gap:2px; }
 .gcast-seg button { all:unset; pointer-events:auto; cursor:pointer; padding:3px 13px; border-radius:5px;
@@ -647,6 +777,19 @@ const CSS = `
 .gcast-btn.tiny[disabled] { opacity:.35; cursor:default; }
 .gcast-btn.tiny[disabled]:hover { border-color:var(--h3-line); color:var(--h3-dim); }
 .gcast-btn.tiny.done { border-color:#a97bff; color:#c9aeff; }
+/* UPSCALE TO: the target of the upscale pass, in the refine wire orange so it
+   reads as belonging to the second pass, not the draft */
+.gcast-label.up { color:#FFA931; white-space:nowrap; }
+.gcast-label.up.gcast-chk { display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+  margin:0; font-size:inherit; }
+/* the canvas card's last line: MP readout left, UPSCALE TO right, one row */
+.gcast-cfoot { display:flex; align-items:center; gap:6px; min-height:24px; }
+.gcast-cfoot .gcast-read:first-child { flex:1 1 auto; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.gcast-cfoot input[type="number"] { width:52px; }
+.gcast-cfoot .gcast-select.on { border-color:#FFA931; color:#FFA931; }
+.gcast-cfoot .gcast-select.on .caret { color:#FFA931; }
+.gcast-read b.up { color:#FFA931; }
 .gcast select, .gcast input[type="number"] {
   background:var(--h3-bg); color:var(--h3-txt); border:1px solid var(--h3-line);
   border-radius:5px; padding:4px 6px; font-size:11.5px; font-family:inherit; outline:none; }
@@ -664,9 +807,14 @@ const CSS = `
 .gcast-refmul { flex:0 0 46px; width:46px; text-align:center; padding:0 2px;
   border-radius:6px; border:1px solid var(--h3-line, #ffffff1f);
   background:var(--h3-field, #ffffff0a); color:inherit; font:inherit; }
-.gcast-refmul.on { border-color:#45b1d5; color:#45b1d5; }
+.gcast-refmul.on { border-color:#45b1d5; color:#FFA931; }
 .gcast-refrow .gcast-select { flex:0 0 auto; }
-.gcast-refrow .gcast-select.on { border-color:#45b1d5; color:#45b1d5; }
+.gcast-refrow .gcast-select.on { border-color:#45b1d5; color:#FFA931; }
+.gcast-refrow .gcast-select.on .caret { color:#FFA931; }
+.gcast-refnote-mul { color:#FFA931; }
+/* second line: the size the refine pass re-encodes the references at */
+.gcast-refnote-res { margin-top:2px; }
+.gcast-refnote-res b { color:#FFA931; font-weight:600; }
 .gcast-refmul::-webkit-outer-spin-button,
 .gcast-refmul::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
 .gcast-toggle button { all:unset; pointer-events:auto; cursor:pointer; padding:3px 9px; border-radius:4px;
@@ -782,14 +930,26 @@ const CSS = `
   font-size:10px; padding:2px 4px; font-family:inherit; }
 .gcast-shots-foot.run .gcast-chk { font-size:10px; gap:4px; }
 /* the upscale pass is a different workflow, not an extra: warn, in orange */
-.gcast-chk.upwarn { color:#e8a758; }
-.gcast-chk.upwarn input { accent-color:#e8a758; }
-.gcast-chk.upwarn .ico { display:inline-flex; color:#e8a758; }
-.gcast-chk.upwarn.on { color:#1a1208; background:#e8a758; border-radius:4px; padding:1px 6px 1px 3px; }
-.gcast-chk.upwarn.on .ico { color:#1a1208; }
+.gcast-chk.upwarn { color:#FFA931; }
+.gcast-chk.upwarn .ico { display:inline-flex; color:#FFA931; }
+/* ticked: orange text and an orange tick on a dark box, framed in orange -
+   no filled block */
+.gcast-chk.upwarn.on { color:#FFA931; }
+.gcast-chk.upwarn.on .ico { color:#FFA931; }
+.gcast-chk.upwarn input { appearance:none; -webkit-appearance:none; margin:0;
+  width:13px; height:13px; flex:0 0 auto; border:1px solid #FFA931; border-radius:3px;
+  background:#141414; display:inline-grid; place-content:center; cursor:pointer; }
+.gcast-chk.upwarn input:checked::after { content:""; width:7px; height:4px; margin-top:-2px;
+  border-left:2px solid #FFA931; border-bottom:2px solid #FFA931; transform:rotate(-45deg); }
+.gcast-chk.upwarn.on input { border-color:#FFA931; }
 .gcast-btn.run { border-color:var(--h3-accent); color:var(--h3-accent); }
 .gcast-btn.run:hover:not([disabled]) { background:#ff9f4318; }
 .gcast-btn.run { display:inline-flex; align-items:center; gap:5px; }
+.gcast-btn.asm { display:inline-flex; align-items:center; gap:5px; }
+.gcast-btn.asm .ico { flex:0 0 auto; pointer-events:none; }
+.gcast-asmnote { font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--h3-dim);
+  padding:4px 2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gcast-asmnote.err { color:#ff7a7a; }
 .gcast-btn.run .ico { flex:0 0 auto; pointer-events:none; transition:transform .18s; }
 .gcast-btn.run:hover:not([disabled]) .ico { transform:translate(1px,-1px); }
 .gcast-x { all:unset; pointer-events:auto; cursor:pointer; margin-left:auto; color:var(--h3-dim); padding:0 3px;
@@ -817,6 +977,20 @@ const CSS = `
    has to come AFTER it or it never applies. */
 .gcast-grid.med4 .gcast-thumb { aspect-ratio:16/9; }
 .gcast-grid.fl3 .gcast-thumb { aspect-ratio:16/9; }
+/* An EMPTY video card: the card itself, not the well. Its own grey at the
+   top, grading down into near-black with a fine dot grid at the bottom, so
+   the empty lower half reads as a surface rather than dead space. Filled
+   cards and drop targets keep their plain background. */
+.gcast-media.vid:not(.filled):not(.drop) {
+  background:
+    linear-gradient(180deg, var(--h3-panel) 0%, var(--h3-panel) 30%, transparent 100%),
+    radial-gradient(rgba(255,255,255,.07) .7px, transparent 1.1px) 0 0 / 6px 6px,
+    #0d0d0d; }
+.gcast-media.vid.cont:not(.filled):not(.drop) {
+  background:
+    linear-gradient(180deg, #221c15 0%, #221c15 30%, transparent 100%),
+    radial-gradient(rgba(255,190,120,.07) .7px, transparent 1.1px) 0 0 / 6px 6px,
+    #0e0b08; }
 
 /* project timeline ----------------------------------------------------
    The whole film across the top of the node: one block per clip, width in
@@ -859,6 +1033,9 @@ const CSS = `
 .gcast-tl .rule .lat { position:absolute; bottom:0; height:4px; border-radius:2px;
   background:#FF9CF9; pointer-events:none; }
 .gcast-tl .rule .lat.tail { opacity:.8; }
+/* the upscale's tail latent, stacked over the draft band */
+.gcast-tl .rule .lat.up { bottom:5px; height:3px; background:#FFA931; }
+.gcast-tl .rule .lat.up.none { background:none; border:1px dashed #FFA931; height:1px; opacity:.7; }
 .gcast-tl .rule .latlbl { position:absolute; left:0; top:0; line-height:1;
   font-family:ui-monospace,Consolas,monospace; font-size:8px; color:#FF9CF9;
   pointer-events:none; }
@@ -1479,6 +1656,9 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
 .gcast-songnum { width:52px; background:#191919; color:#ccc; border:1px solid #333;
   border-radius:4px; font-size:10px; padding:2px 4px; font-family:ui-monospace,Consolas,monospace; }
 .gcast-songnum:focus { outline:none; border-color:var(--h3-accent); }
+/* .gcast-shots input is width:100% and outranks the class alone, which blew
+   from / hold up to full-width rows of their own */
+.gcast-shots input.gcast-songnum { width:56px; flex:0 0 56px; padding:3px 5px; font-size:11px; }
 .gcast-songwin { font-family:ui-monospace,Consolas,monospace; font-size:9.5px;
   color:var(--h3-accent); margin-top:2px; white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis; }
@@ -1822,9 +2002,20 @@ function buildUI(node) {
       return { src: null, prev: null, overlap: 0 };
     const sh = p.shots[p.idx];
     const linked = p.idx > 0 && !!sh.link;
+    /* What it joins onto: the CONTINUE FROM slot when it was filled in upscale
+       mode more recently than the previous clip was last upscaled (dropped
+       there by hand, or a take picked), otherwise that recorded upscale. The
+       slot goes as its copy in input/, so it still works if the original
+       render in output/ was deleted. */
+    const c = st.cont;
+    const lastUp = linked ? p.shots[p.idx - 1].lastUp : null;
+    const useSlot = linked && c && c.file && c.upJoin > ((lastUp && lastUp.t) || 0);
+    /* With the slot, its ORIGINAL render goes too: that is where the .h3latent
+       the seam is held on lives. The copy in input/ is only the fallback. */
     return {
       src: pickOf(sh.lastOut),
-      prev: linked ? pickOf(p.shots[p.idx - 1].lastUp) : null,
+      prev: !linked ? null : useSlot ? pickOf(c.origin) : pickOf(lastUp),
+      join: useSlot ? String(c.file) : "",
       overlap: linked ? songOverlap(p, p.idx) : 0,
     };
   }
@@ -1858,8 +2049,72 @@ function buildUI(node) {
   }
   /* cheap: only asks again when the set of recorded renders changed */
   const latSigOf = (p) => String((p && p.name) || "") + "#" + ((p && p.shots) || [])
-    .map((s, i) => (s && s.name || "") + "@" + latKey(s && s.lastOut)).join("|");
+    .map((s, i) => (s && s.name || "") + "@" + latKey(s && s.lastOut) + "^" + latKey(s && s.lastUp)).join("|");
+  /* SHARED RENDER RECORDS. Each workflow holds its own copy of the project in
+     its H3 Studio node, so a draft rendered in the draft workflow was only
+     recorded THERE - the upscale workflow kept pointing at the previous take,
+     for its band and for the upscale pass itself. Every recorded render also
+     goes into localStorage, keyed by project name and clip id (ids survive the
+     .h3proj.json round trip, so two workflows that opened the same file
+     share them); any H3 Studio showing that project takes the newer record.
+     Browser-local by nature: same machine, same browser, which is where both
+     workflows live. */
+  const REC_STORE = "cglide.renders.v1";
+  let recStoreRaw = null;
+  function storeRecord(p, sh, key, rec) {
+    try {
+      const pk = String((p && p.name) || "").trim();
+      if (!pk || !sh || !sh.id || !rec || !rec.name) return;
+      const all = JSON.parse(localStorage.getItem(REC_STORE) || "{}");
+      const prj = all[pk] = all[pk] || {};
+      prj[sh.id] = Object.assign(prj[sh.id] || {}, { [key]: rec });
+      prj._t = Date.now();
+      const names = Object.keys(all);
+      if (names.length > 40) {         // keep the 40 most recently touched projects
+        names.sort((a, b) => (all[b]._t || 0) - (all[a]._t || 0))
+             .slice(40).forEach((n) => { delete all[n]; });
+      }
+      localStorage.setItem(REC_STORE, JSON.stringify(all));
+    } catch (e) { /* storage full or blocked: the node's own record still stands */ }
+  }
+  /* true when a newer record was taken from the store */
+  function mergeStore(p) {
+    let raw = null;
+    try { raw = localStorage.getItem(REC_STORE); } catch (e) { return false; }
+    if (!raw || raw === recStoreRaw) return false;   // nothing new since last look
+    recStoreRaw = raw;
+    let prj = null;
+    try { prj = JSON.parse(raw)[String((p && p.name) || "").trim()]; } catch (e) { return false; }
+    if (!prj || !p || !Array.isArray(p.shots)) return false;
+    let changed = false;
+    p.shots.forEach((sh) => {
+      const got = sh && sh.id && prj[sh.id];
+      if (!got) return;
+      ["lastOut", "lastUp"].forEach((key) => {
+        const r = got[key], cur = sh[key];
+        if (!r || !r.name) return;
+        if (cur && cur.name === r.name && (cur.subfolder || "") === (r.subfolder || "")) {
+          if (!!cur.pick !== !!r.pick && (r.t || 0) > (cur.t || 0)) {   // same take, pin changed
+            if (r.pick) cur.pick = true; else delete cur.pick;
+            cur.t = r.t; changed = true;
+          }
+          return;
+        }
+        if (cur && (cur.t || 0) >= (r.t || 0)) return;   // ours is as new or newer
+        sh[key] = { name: String(r.name), subfolder: String(r.subfolder || ""),
+                    type: r.type === "temp" ? "temp" : "output", t: r.t || 0 };
+        if (r.pick) sh[key].pick = true;
+        changed = true;
+        console.log(`[H3 Studio] ${shotLabel(sh, p.shots.indexOf(sh))}: ${key === "lastUp" ? "upscale" : "render"} `
+                    + `picked up from another workflow \u2192 ${r.name}`);
+      });
+    });
+    return changed;
+  }
+  window.addEventListener("focus", () => { recStoreRaw = null; try { paintTimeline(); } catch (e) {} });
+
   function latentsCheck(p) {
+    if (mergeStore(p)) commit();
     const sig = latSigOf(p);
     if (sig === latSig) return;
     latSig = sig;
@@ -1877,7 +2132,15 @@ function buildUI(node) {
       rec: (s && s.lastOut && s.lastOut.name)
         ? { name: String(s.lastOut.name), subfolder: String(s.lastOut.subfolder || ""),
             type: s.lastOut.type === "temp" ? "temp" : "output" } : null,
-      up: (s && s.lastUp && s.lastUp.name) ? { name: String(s.lastUp.name) } : null,
+      up: (s && s.lastUp && s.lastUp.name)
+        ? { name: String(s.lastUp.name), subfolder: String(s.lastUp.subfolder || ""),
+            type: s.lastUp.type === "temp" ? "temp" : "output" } : null,
+      /* a take picked by hand stays picked: no newer-draft swap */
+      pin: !!(s && s.lastOut && s.lastOut.pick),
+      /* the canvas tells a draft from an upscale: a draft's saved latent is
+         canvas-sized, an upscale's is not (the open clip's live state wins) */
+      width: Number(((i === p.idx) ? st : (s && s.state) || {}).width) || 0,
+      height: Number(((i === p.idx) ? st : (s && s.state) || {}).height) || 0,
     }));
     const m = new Map();
     if (list.length) {
@@ -1913,9 +2176,11 @@ function buildUI(node) {
         if (s.rec && s.rec.name) {
           const was = sh.lastOut && sh.lastOut.name;
           sh.lastOut = { name: s.rec.name, subfolder: s.rec.subfolder || "",
-                         type: s.rec.type === "temp" ? "temp" : "output" };
+                         type: s.rec.type === "temp" ? "temp" : "output", t: 1 };
+          storeRecord(p, sh, "lastOut", sh.lastOut);
           healed++;
           fixes.push(`${shotLabel(sh, i)} \u2192 ${s.rec.subfolder ? s.rec.subfolder + "/" : ""}${s.rec.name}`
+                     + (s.how === "newer" ? " (newer draft on disk)" : "")
                      + (was && was !== s.rec.name ? ` (was ${was})` : ""));
         }
         if (sh.lastOut && sh.lastOut.name) m.set(latKey(sh.lastOut), s);
@@ -1924,7 +2189,7 @@ function buildUI(node) {
       });
       console.log(`[H3 Studio] latent band: ${list.length} clip(s) \u2014 ${full} full, `
                   + `${tail} tail only`
-                  + (healed ? `, ${healed} render(s) found on disk and recorded` : "")
+                  + (healed ? `, ${healed} record(s) updated from disk` : "")
                   + (none ? `, ${none} never rendered` : "")
                   + (lost.length ? `, ${lost.length} recorded but missing (${lost.slice(0, 3).join(", ")}`
                                    + (lost.length > 3 ? ", \u2026" : "") + ")" : ""));
@@ -2130,7 +2395,22 @@ function buildUI(node) {
   const btnRef = el("button", null, "Omni references");
   seg.append(btnFL, btnRef);
   const need = el("div", "gcast-need");
-  modeBar.append(seg, need);
+  /* UPSCALE MODE banner, shown in place of the wordmark while the upscale
+     pass is on (paintUpBanner). Static markup, animated by CSS only. */
+  const upBanner = el("div", "gcast-upbanner");
+  const triSvg = '<svg class="tri" viewBox="0 0 24 22" aria-hidden="true">'
+    + '<path d="M12 2.2 22.6 20.2H1.4Z" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round"/>'
+    + '<rect x="10.9" y="7.6" width="2.2" height="7" rx=".6" fill="currentColor"/>'
+    + '<rect x="10.9" y="16.3" width="2.2" height="2.2" rx=".6" fill="currentColor"/></svg>';
+  upBanner.innerHTML = '<div class="stripes"></div><div class="dots"></div>'
+    + '<div class="mid">' + triSvg
+    + '<div class="txt"><div class="a">WARNING!</div>'
+    + '<div class="b"><b>UPSCALE MODE</b><i>refines saved .h3full latents</i></div></div>'
+    + triSvg + '</div>';
+  const idBanner = el("div", "gcast-idbanner");
+  idBanner.innerHTML = '<div class="stripes"></div><div class="dots"></div>'
+    + '<div class="hl t"></div><div class="hl b"></div><div class="txt">H3 STUDIO</div>';
+  modeBar.append(idBanner, upBanner, seg, need);
 
   /* ---- settings ---- */
   const row = el("div", "gcast-row");
@@ -2149,13 +2429,59 @@ function buildUI(node) {
   /* Changing the canvas one clip at a time is the kind of chore that gets done
      wrong once and shows up as a resolution change mid-project. */
   const bAllRes = el("button", "gcast-btn tiny", "all clips");
-  bAllRes.title = "Give every clip in this project this canvas size";
+  bAllRes.title = "Give every clip in this project this canvas size and this upscale size";
   canvasCtl2.append(inW, el("span", "gcast-read", "×"), inH, bAllRes);
   cCanvas.append(canvasCtl2);
   const canvasNote = el("div", "gcast-read");
   cCanvas.append(canvasCtl);
 
-  cCanvas.append(canvasNote);
+  /* UPSCALE TO. Only read by an upscale pass: the draft canvas above stays
+     what the draft is, so takes can still tell a draft from an upscale. It
+     shares the card's last line with the MP readout so the card keeps its
+     height; the W x H fields only appear for Custom, in place of the readout. */
+  /* The UPSCALE PASS tick lives here, on the UPSCALE TO label: ticked, Render
+     builds each clip from its saved full latent instead of generating, and
+     the dropdown beside it says at what size. Orange with a warning sign on
+     purpose: ticked by mistake in the draft workflow it would load old takes
+     instead of generating new ones. */
+  const upLabel = el("label", "gcast-chk upwarn gcast-label up");
+  const cbUp = el("input"); cbUp.type = "checkbox";
+  const icoUp = el("span", "ico");
+  icoUp.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">'
+    + '<path fill="currentColor" fill-rule="evenodd" d="M8 1.2 15.2 14H.8L8 1.2Z'
+    + 'M7.2 6v4.2h1.6V6H7.2Zm0 5.4v1.6h1.6v-1.6H7.2Z"/></svg>';
+  upLabel.append(cbUp, icoUp, el("span", null, "Upscale to"));
+  upLabel.title = "Upscale pass, for an upscale workflow (H3 Studio's latent \u2192 "
+    + "upscaler \u2192 refine, no first sampler). Ticked, each clip is built from the full "
+    + "latent saved with its draft (save_latent = full), output at the size beside it, "
+    + "and linked clips are joined onto the upscale in CONTINUE FROM. Drafts are left untouched.";
+  upLabel.onpointerdown = (e) => e.stopPropagation();
+  cbUp.onchange = () => {
+    node.properties.gcast_upscale = cbUp.checked;
+    render(); commit();
+    tlSig = ""; paintTimeline();          /* the band shows upscale tails in this mode */
+  };
+  const selUp = makeSelect(node, "Size the upscale pass outputs on width / height");
+  const inUW = el("input"); inUW.type = "number"; inUW.step = 32; inUW.min = 32;
+  const inUH = el("input"); inUH.type = "number"; inUH.step = 32; inUH.min = 32;
+  const upX = el("span", "gcast-read", "\u00d7");
+  let upCustom = false;           /* keeps the W x H fields open while typing */
+  const canvasFoot = el("div", "gcast-cfoot");
+  canvasFoot.append(canvasNote, inUW, upX, inUH, upLabel, selUp.el);
+  cCanvas.append(canvasFoot);
+  const UP_HEIGHTS = [[720, "720p"], [900, "900p"], [1080, "1080p"], [1440, "1440p"], [2160, "4K"]];
+  const upPresets = () => {
+    /* The family's NOMINAL ratio, not the canvas's exact one: 1344x768 is
+       1.75, not 16:9, and its own ratio gave 1888x1088 for 1080p. A canvas
+       outside every family keeps its exact ratio. */
+    const fam = findRatio(st.width, st.height);
+    const ab = fam && /^(\d+):(\d+)$/.exec(fam.label);
+    const r = ab ? (+ab[1] / +ab[2]) : st.width / st.height;
+    return UP_HEIGHTS.map(([h, lab]) => {
+      const w = Math.max(32, Math.round((h * r) / 32) * 32), hh = Math.max(32, Math.round(h / 32) * 32);
+      return { label: lab, value: `${w}x${hh}`, note: `${w} x ${hh}`, w, h: hh };
+    });
+  };
 
   const cLen = el("div", "gcast-card");
   cLen.append(el("div", "gcast-label", "Length"));
@@ -2200,6 +2526,66 @@ function buildUI(node) {
   selRefine.el.title = inRefine.title;
   refRow.append(tog, selRefine.el, inRefine);
   const refNote = el("div", "gcast-read");
+
+  /* What size the reference IMAGES are actually encoded at, pass 1 and refine.
+     Same arithmetic as _refs() in csglide_cast.py, so it is the real number,
+     not a guess:
+       match  scale = min(1, sqrt(canvas area / image area))   same area as the canvas
+       max    scale = min(1, 2048 / image short edge)
+       refine scale = min(1, scale x multiplier)                never past the source
+     then both sides rounded to 32. Needs each picture's own pixels, so they are
+     measured once per file in the background. Videos are not resized for the
+     refine pass, so they are left out. */
+  const refRes = el("div", "gcast-refnote-res");
+  const imgDims = new Map();          /* file -> {w,h} | "wait" | "fail" */
+  const r32 = (v) => Math.max(32, Math.round(v / 32) * 32);
+  function refSizeOf(w, h, mul) {
+    const base = st.ref_image_size === "max"
+      ? Math.min(1, 2048 / Math.min(w, h))
+      : Math.min(1, Math.sqrt((st.width * st.height) / (w * h)));
+    const ref = Math.min(1, base * Math.max(1, mul));
+    return { p1: [r32(w * base), r32(h * base)], rf: [r32(w * ref), r32(h * ref)],
+             capped: mul > 1 && base * mul > 1 + 1e-9, flat: base >= 1 - 1e-9 };
+  }
+  function paintRefRes() {
+    const mul = Number(st.ref_refine_scale) || 1;
+    const files = st.slots.images.map((sl, n) => ({ n: n + 1, file: sl.file })).filter((x) => x.file);
+    refRes.title = "";
+    if (!files.length) { refRes.textContent = "refs: no images yet"; return; }
+    const rows = [];
+    let waiting = 0;
+    files.forEach((x) => {
+      const d = imgDims.get(x.file);
+      if (d && d.w) { rows.push(Object.assign({ n: x.n, w: d.w, h: d.h }, refSizeOf(d.w, d.h, mul))); return; }
+      if (d === "fail") return;
+      waiting++;
+      if (!d) {
+        imgDims.set(x.file, "wait");
+        const im = new Image();
+        im.onload = () => { imgDims.set(x.file, { w: im.naturalWidth, h: im.naturalHeight }); paintRefRes(); };
+        im.onerror = () => { imgDims.set(x.file, "fail"); paintRefRes(); };
+        im.src = viewURL(x.file);
+      }
+    });
+    if (!rows.length) { refRes.textContent = waiting ? "refs: measuring…" : "refs: size unknown"; return; }
+    const area = (a) => a[0] * a[1];
+    const big = rows.reduce((a, b) => (area(b.rf) > area(a.rf) ? b : a));
+    const same = rows.every((r) => r.p1[0] === big.p1[0] && r.p1[1] === big.p1[1]
+                                && r.rf[0] === big.rf[0] && r.rf[1] === big.rf[1]);
+    const up = same ? "" : "up to ";
+    const sz = (a) => `${a[0]}×${a[1]}`;
+    let html = mul > 1
+      ? `refs ${up}${sz(big.p1)} → refine ${up}<b>${sz(big.rf)}</b>`
+      : `refs ${up}<b>${sz(big.p1)}</b>`;
+    const capped = rows.filter((r) => r.capped).length;
+    if (capped) html += ` · ${capped === rows.length ? "" : capped + " "}capped at source`;
+    refRes.innerHTML = html;
+    refRes.title = rows.map((r) => `@image${r.n}  ${r.w}×${r.h} source  →  pass 1 ${sz(r.p1)}`
+        + (mul > 1 ? `  →  refine ${sz(r.rf)}${r.capped ? " (capped)" : ""}` : "")).join("\n")
+      + "\n\nRefine never goes past a picture's own pixels."
+      + (st.ref_image_size === "max" ? " Under max a source up to 2048px short edge is already at full size, so the multiplier has nothing left to add." : "")
+      + "\nVideo references are not resized for the refine pass.";
+  }
   cRef.append(refRow, refNote);
 
   row.append(cCanvas, cLen, cRef);
@@ -2630,6 +3016,7 @@ function buildUI(node) {
        one worth checking. Done after the render so the slot appears at once
        and the badge follows. */
     if (slot === st.cont && kind === "video") {
+      if (upscaleOn()) slot.upJoin = Date.now();     /* an upscale to join onto */
       tagChroma(slot, name);
       /* A clip dropped straight on CONTINUE FROM is a continuation like any
          other, so it gets the seam reference the adopt route gets. Pin the
@@ -2752,6 +3139,7 @@ function buildUI(node) {
        about something that cannot happen. */
     slot.chroma = opts.reference ? "" : (d.chroma || "");
     slot.codec = opts.reference ? "" : (d.codec || "");
+    if (slot === st.cont && upscaleOn()) slot.upJoin = Date.now();
     /* start/end left at the full range on purpose: the render pass snaps an
        untouched continuation clip to its last 22 frames. */
     return d;
@@ -2868,6 +3256,7 @@ function buildUI(node) {
        design better past the join, and on some shots it darkens more instead
        and nudges the camera. So it is a setting, not a rule. */
     if (!settings().seamRef) return;
+    if (upscaleOn()) return;        /* the upscale pass joins, it does not guide */
     const slot = (st.slots.videos || [])[SEAM_REF_SLOT];
     if (!slot) return;
     if (slot.file && !slot.seam) {
@@ -3968,7 +4357,7 @@ function buildUI(node) {
   function mediaSlot(slot, kind, caption, token, usedSeconds, opts) {
     opts = opts || {};
     const card = el("div", "gcast-media" + (slot.file ? " filled" : "")
-                    + (opts.cont ? " cont" : ""));
+                    + (opts.cont ? " cont" : "") + (kind === "video" ? " vid" : ""));
     const cap = el("div", "gcast-cap");
     if (opts.cont) {
       /* An arrow entering a box: this is where the clip comes IN from, not a
@@ -4107,8 +4496,20 @@ function buildUI(node) {
     catch (e) { console.error("[H3 Studio] timeline paint failed:", e); }
   }
 
+  function paintUpBanner() {
+    const on = upscaleOn();
+    cbUp.checked = on;
+    upLabel.classList.toggle("on", on);
+    /* not mid-run: switching modes under a running Render would mix them */
+    try { cbUp.disabled = !!run; } catch (e) { cbUp.disabled = false; }
+    modeBar.classList.toggle("upmode", on);
+    modeBar.title = on ? "Upscale pass is ON: Render rebuilds each clip from its saved .h3full "
+      + "latent instead of generating. Untick \"Upscale to\" in the Canvas card for drafts." : "";
+  }
+
   function renderInner() {
     root.dataset.mode = st.mode;
+    paintUpBanner();
     btnFL.setAttribute("aria-pressed", String(st.mode === "fl2va"));
     btnRef.setAttribute("aria-pressed", String(st.mode === "ref2va"));
     need.innerHTML = st.mode === "fl2va"
@@ -4134,6 +4535,30 @@ function buildUI(node) {
     const mp = (st.width * st.height / 1e6).toFixed(2);
     canvasNote.innerHTML = `<b>${mp} MP</b> · ${(st.width / st.height).toFixed(3)}:1`
       + (st.width * st.height > 768 * 1344 ? ` · <span class="gcast-warn">past H3's area cap</span>` : "");
+    {
+      const pre = upPresets();
+      const on = st.up_width > 0 && st.up_height > 0;
+      selUp.setOptions([{ label: "Off", value: "off", note: "draft \u00d7 refine" }]
+        .concat(pre, [{ label: "Custom", value: "custom" }]));
+      const hit = on && pre.find((o) => o.w === st.up_width && o.h === st.up_height);
+      const custom = on && (!hit || upCustom);
+      selUp.value = !on ? "off" : custom ? "custom" : hit.value;
+      selUp.el.classList.toggle("on", on);
+      [inUW, upX, inUH].forEach((e) => { e.style.display = custom ? "" : "none"; });
+      canvasNote.style.display = custom ? "none" : "";
+      if (document.activeElement !== inUW) inUW.value = on ? st.up_width : "";
+      if (document.activeElement !== inUH) inUH.value = on ? st.up_height : "";
+      if (on) {
+        const ump = (st.up_width * st.up_height / 1e6).toFixed(2);
+        const f = Math.round(Math.sqrt((st.up_width * st.up_height) / (st.width * st.height)) * 100) / 100;
+        selUp.el.title = `Upscale pass: ${st.width}\u00d7${st.height} \u2192 ${st.up_width}\u00d7${st.up_height}`
+          + ` (${ump} MP, \u00d7${f}). Same for every clip in the project. Drafts still go out at the canvas.`
+          + " The refine multiplier is separate: set it to roughly the same factor.";
+      } else {
+        selUp.el.title = "Off: an upscale pass outputs the draft latent \u00d7 the refine "
+          + `multiplier (${Number(st.ref_refine_scale) || 1}\u00d7).`;
+      }
+    }
 
     const frames = alignFrames(st.length);
     selLen.value = LENGTH_PRESETS.includes(frames) ? String(frames) : "custom";
@@ -4168,10 +4593,12 @@ function buildUI(node) {
     if (document.activeElement !== inRefine) inRefine.value = refMul;
     inRefine.classList.toggle("on", refMul > 1);
     selRefine.el.classList.toggle("on", refMul > 1);
-    refNote.textContent = (st.ref_image_size === "match"
+    refNote.textContent = st.ref_image_size === "match"
       ? "scaled to the canvas — faster"
-      : "2048px short edge — stronger identity, slower")
-      + (refMul > 1 ? ` · refine ${refMul}\u00d7` : "");
+      : "2048px short edge — stronger identity, slower";
+    if (refMul > 1) refNote.append(" · ", el("span", "gcast-refnote-mul", `refine ${refMul}\u00d7`));
+    refNote.append(refRes);
+    paintRefRes();
 
     const isFL = st.mode === "fl2va";
     /* fl2va already gives the prompt the leftover room, so Expand has nothing
@@ -5805,6 +6232,10 @@ function buildUI(node) {
           : ls.full ? "full (.h3full) \u2014 can be upscaled"
           : ls.tail ? "tail only (.h3latent) \u2014 latent hold works, no upscale"
           : "none saved");
+        if (sh.lastOut.pick) d.title += "\nTake: picked by hand (right-click \u2192 Takes)";
+        if (ls && ls.up_found) d.title += "\nUpscale: " + (ls.up_tail
+          ? "tail latent saved \u2014 the next clip's upscale holds its seam on it"
+          : "no tail latent \u2014 the next clip's seam will be a pixel join");
       }
       if (b.w < 24) d.classList.add("tiny");
       if (sh.off) d.classList.add("off");
@@ -5885,6 +6316,25 @@ function buildUI(node) {
         tlRule.append(band);
         latAny = true;
       });
+      /* The UPSCALE's tail, above the draft band, in the refine orange: the
+         latent the next clip's upscale holds its seam on. Shown in upscale
+         mode, or always if Settings says so. */
+      /* read raw: settings() can still be in its dead zone on the first paint */
+      if (upscaleOn() || !!((node.properties || {}).gcast_settings || {}).bandUp) {
+        L.blocks.forEach((b) => {
+          const s = pj && pj.shots ? latOf(pj.shots[b.i]) : null;
+          if (!s || !s.up_found) return;
+          const w0 = Math.max(3, b.w - 2);
+          const tw = Math.max(6, Math.min(w0, tailSecs * L.pps));
+          const left = b.x + w0 - tw - tlPan;
+          if (left + tw < 0 || left > L.view) return;
+          const band = el("div", "lat up" + (s.up_tail ? "" : " none"));
+          band.style.left = left + "px";
+          band.style.width = tw + "px";
+          tlRule.append(band);
+          latAny = true;
+        });
+      }
     }
     const first = Math.floor(tlPan / L.pps / step) * step;
     const last = (tlPan + L.view) / L.pps;
@@ -6207,6 +6657,19 @@ function buildUI(node) {
    * commit on click. */
   let cpMenu = null, cpDismissing = false;
 
+  /* Wheel over the palette scrolls the takes list. The frontend takes the
+     wheel at window level, so the list is scrolled by hand, same as the
+     project list. Anywhere else the wheel still closes the palette, so it
+     never floats away from the block it belongs to while the canvas zooms. */
+  function cpWheel(e) {
+    if (cpMenu && cpMenu.contains(e.target)) {
+      const list = cpMenu.querySelector(".tk");
+      if (list && list.scrollHeight > list.clientHeight) list.scrollTop += e.deltaY;
+      e.preventDefault(); e.stopPropagation();
+      return;
+    }
+    closeClipPalette();
+  }
   function closeClipPalette() {
     cpDismissing = false;
     if (!cpMenu) return;
@@ -6214,7 +6677,7 @@ function buildUI(node) {
     cpMenu = null;
     document.removeEventListener("pointerdown", cpOutside, true);
     document.removeEventListener("keydown", cpKey, true);
-    window.removeEventListener("wheel", closeClipPalette, true);
+    window.removeEventListener("wheel", cpWheel, true);
   }
   function cpOutside(e) {
     if (!cpMenu || cpMenu.contains(e.target) || cpDismissing) return;
@@ -6271,15 +6734,160 @@ function buildUI(node) {
     });
     cpMenu.append(auto);
 
+    /* TAKES. Every render of this clip on disk, newest first. Clicking one
+       makes it the clip's draft: the latent band, the upscale pass and
+       latent hold all use it. A hand pick is pinned - no newer render on
+       disk replaces it - until the clip is rendered again. */
+    cpMenu.append(el("div", "tk-h", "Takes"));
+    const tk = el("div", "tk");
+    tk.append(el("div", "msg", "checking\u2026"));
+    cpMenu.append(tk);
+    loadTakes(i, tk, cpMenu, x, y);
+
     document.body.append(cpMenu);
+    placeClipPalette(x, y);
+
+    setTimeout(() => document.addEventListener("pointerdown", cpOutside, true), 0);
+    document.addEventListener("keydown", cpKey, true);
+    window.addEventListener("wheel", cpWheel, { capture: true, passive: false });
+  }
+
+  function placeClipPalette(x, y) {
+    if (!cpMenu) return;
     const w = cpMenu.offsetWidth, h = cpMenu.offsetHeight;
     cpMenu.style.left = Math.max(6, Math.min(x, window.innerWidth - w - 8)) + "px";
     cpMenu.style.top = (y + h > window.innerHeight - 8
       ? Math.max(6, y - h) : y) + "px";
+  }
 
-    setTimeout(() => document.addEventListener("pointerdown", cpOutside, true), 0);
-    document.addEventListener("keydown", cpKey, true);
-    window.addEventListener("wheel", closeClipPalette, true);
+  function takeWhen(sec) {
+    const d = new Date(sec * 1000), now = new Date();
+    const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return d.toDateString() === now.toDateString() ? hm
+      : d.toLocaleDateString([], { day: "2-digit", month: "2-digit" }) + " " + hm;
+  }
+
+  async function loadTakes(i, box, menu, x, y) {
+    const p = proj(), sh = p.shots[i];
+    if (!sh) return;
+    const clip = {
+      name: String(sh.name || "").trim(), index: i + 1, count: p.shots.length,
+      project: String(p.name || "").trim(),
+      rec: (sh.lastOut && sh.lastOut.name)
+        ? { name: String(sh.lastOut.name), subfolder: String(sh.lastOut.subfolder || ""),
+            type: sh.lastOut.type === "temp" ? "temp" : "output" } : null,
+      up: (sh.lastUp && sh.lastUp.name) ? { name: String(sh.lastUp.name) } : null,
+      /* bigger than this and tail only = an older upscale pass */
+      width: Number(((i === p.idx) ? st : sh.state || {}).width) || 0,
+      height: Number(((i === p.idx) ? st : sh.state || {}).height) || 0,
+    };
+    let takes = null;
+    try {
+      const r = await api.fetchApi("/cglide/clip_takes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clip }),
+      });
+      if (r.status === 404) throw new Error("restart ComfyUI after updating");
+      if (r.status !== 200) throw new Error("clip_takes " + r.status);
+      takes = (await r.json()).takes || [];
+    } catch (e) {
+      if (cpMenu !== menu) return;
+      box.replaceChildren(el("div", "msg", "couldn't list takes \u2014 " + (e.message || e)));
+      placeClipPalette(x, y);
+      return;
+    }
+    if (cpMenu !== menu) return;            // closed or reopened meanwhile
+    box.replaceChildren();
+    if (!takes.length) {
+      box.append(el("div", "msg", p.name ? "no render of this clip yet"
+                                         : "save the project first (takes are found by its name)"));
+      placeClipPalette(x, y);
+      return;
+    }
+    const cur = sh.lastOut && sh.lastOut.name;
+    const curUp = sh.lastUp && sh.lastUp.name;
+    /* Renders with no latent beside them cannot be upscaled or held, and test
+       runs pile them up. Hidden unless Settings says otherwise; the current
+       take always shows, whatever it is. */
+    const showAll = !!settings().takesAll;
+    let hidden = 0;
+    takes.forEach((t, k) => {
+      if (!showAll && !t.full && !t.tail && !t.upscale && t.name !== cur) { hidden++; return; }
+      const b = el("button", null);
+      b.type = "button";
+      const on = t.upscale ? t.name === curUp : t.name === cur;
+      if (on) b.classList.add("on");
+      b.append(el("span", "dot"));
+      b.append(el("span", "res", t.w ? `${t.w}\u00d7${t.h}` : "\u2014"));
+      b.append(el("span", "lt " + (t.upscale ? "up" : t.full ? "full" : t.tail ? "tail" : "none"),
+                  t.upscale ? (on ? "upscale \u00b7 joined" : "upscale") : t.full ? "full" : t.tail ? "tail" : "no latent"));
+      b.append(el("span", "when", takeWhen(t.mtime)));
+      b.title = (t.subfolder ? t.subfolder + "/" : "") + t.name
+        + (t.upscale ? "\nAn upscale of this clip. The next linked clip's upscale pass joins onto the one marked joined."
+           : t.full ? "\nFull latent: can be upscaled."
+           : t.tail ? "\nTail only: latent hold works, it can't be upscaled."
+           : "\nNo latent saved beside it.")
+        + (on ? (t.upscale ? "\nJoined onto by the next clip." : "\nCurrent take.")
+              : (t.upscale ? "\nClick to make the next clip join onto this upscale." : "\nClick to use this take."));
+      if (t.upscale) b.classList.add("upk");
+      b.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      b.addEventListener("click", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        closeClipPalette();
+        if (t.upscale) pickUpTake(i, t);
+        else pickTake(i, t, k === 0);
+      });
+      box.append(b);
+    });
+    if (hidden) {
+      const m = el("div", "msg", `${hidden} render${hidden === 1 ? "" : "s"} without a latent hidden \u2014 Settings to show`);
+      m.title = "Settings (the gear) \u2192 \u201cShow takes without a latent\u201d";
+      box.append(m);
+    }
+    placeClipPalette(x, y);
+  }
+
+  function pickTake(i, t, newest) {
+    const p = proj(), sh = p.shots[i];
+    if (!sh) return;
+    const was = sh.lastOut && sh.lastOut.name;
+    sh.lastOut = { name: t.name, subfolder: t.subfolder || "",
+                   type: t.type === "temp" ? "temp" : "output", t: Date.now() };
+    if (!newest) sh.lastOut.pick = true;    // the newest take needs no pin
+    storeRecord(p, sh, "lastOut", sh.lastOut);
+    console.log(`[H3 Studio] ${shotLabel(sh, i)}: take picked \u2192 ${t.name}`
+                + (t.w ? ` (${t.w}\u00d7${t.h}, ${t.full ? "full" : t.tail ? "tail" : "no"} latent)` : "")
+                + (was && was !== t.name ? ` (was ${was})` : ""));
+    commit();
+    latSig = null;
+    refreshLatentsSoon();
+    tlSig = "";
+    paintTimeline();
+  }
+
+  /* The upscale the next linked clip's upscale pass joins onto (lastUp).
+     Normally the last upscale pass recorded it; this lets you go back to an
+     earlier one, or point at a take after deleting the newest. */
+  function pickUpTake(i, t) {
+    const p = proj(), sh = p.shots[i];
+    if (!sh) return;
+    const was = sh.lastUp && sh.lastUp.name;
+    sh.lastUp = { name: t.name, subfolder: t.subfolder || "",
+                  type: t.type === "temp" ? "temp" : "output", t: Date.now() };
+    storeRecord(p, sh, "lastUp", sh.lastUp);
+    console.log(`[H3 Studio] ${shotLabel(sh, i)}: upscale to join onto \u2192 ${t.name}`
+                + (was && was !== t.name ? ` (was ${was})` : ""));
+    commit();
+    /* The next clip on screen and linked: show it in its CONTINUE FROM now. */
+    const nx = p.shots[i + 1];
+    if (upscaleOn() && nx && nx.link && p.idx === i + 1) {
+      adoptInto(st.cont, sh.lastUp).then(() => {
+        st.cont.upJoin = Math.max(Date.now(), sh.lastUp.t + 1);
+        render(); commit();
+      }).catch((e) => console.warn("[H3 Studio] could not show the upscale in CONTINUE FROM:", e));
+    }
+    latSig = null;
+    refreshLatentsSoon();
   }
 
   function setClipColour(i, c) {
@@ -6326,6 +6934,7 @@ function buildUI(node) {
     stash();
     seedFromScreen(p);
     const s = blank ? blankState() : inheritedState();
+    s.up_width = st.up_width || 0; s.up_height = st.up_height || 0;   /* project-wide */
     p.shots.push({ id: uid(), name: "", state: s });
     p.idx = p.shots.length - 1;
     load(JSON.stringify(s));
@@ -6345,6 +6954,103 @@ function buildUI(node) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const VIDEO_OUT_RE = /\.(mkv|mp4|m4v|mov|webm|avi|mpg|mpeg|ts|m2ts|wmv|flv|ogv)$/i;
   let run = null;                 /* null when idle; the run's own state when not */
+
+  /* ---------------------------------------------------------- Assemble film */
+  let asmBusy = false;
+  let asmNote = null;             /* {text, title, err} under the Render row */
+  function glideVideoWidget(name) {
+    try {
+      const n = (app.graph?.nodes || []).find((x) => x.type === "CSGlideVideoCS");
+      const w = n && (n.widgets || []).find((x) => x.name === name);
+      return w ? w.value : undefined;
+    } catch (e) { return undefined; }
+  }
+  /* Glide Join on output = clip: only then is a render one clip, and only then
+     is there a film to put together after a run. */
+  function joinOutputsClips() {
+    try {
+      return (app.graph?.nodes || []).some((n) => n.type === "CSGlideJoinCS" && !n.mode
+        && (n.widgets || []).some((w) => w.name === "output" && w.value === "clip"));
+    } catch (e) { return false; }
+  }
+  /* Show the film in Glide Video's own player, the way a render would, so the
+     last thing on screen is the finished film and not the last clip - which
+     looks just as finished and is not. */
+  function showInGlideVideo(entry) {
+    try {
+      const n = (app.graph?.nodes || []).find((x) => x.type === "CSGlideVideoCS");
+      if (!n || !entry) return false;
+      const msg = { glide_video: [entry] };
+      if (app.nodeOutputs) app.nodeOutputs[n.id] = msg;
+      if (typeof n.onExecuted === "function") { n.onExecuted(msg); n.setDirtyCanvas?.(true, true); return true; }
+    } catch (e) { console.warn("[H3 Studio] could not show the film in Glide Video:", e); }
+    return false;
+  }
+  async function assembleFilm(opts) {
+    opts = opts || {};
+    if (asmBusy || run) return;
+    const p = proj();
+    stash();
+    const up = upscaleOn();
+    const key = up ? "lastUp" : "lastOut";
+    const keep = p.shots.map((sh, i) => i).filter((i) => !p.shots[i].off);
+    const missing = keep.filter((i) => !(p.shots[i][key] && p.shots[i][key].name));
+    if (!keep.length) return;
+    if (missing.length) {
+      if (opts.auto) {
+        console.log("[H3 Studio] Assemble skipped after Render: nothing recorded for "
+                    + missing.map((i) => shotLabel(p.shots[i], i)).join(", "));
+        return;
+      }
+      alert(`H3 Studio: no ${up ? "upscale" : "render"} recorded for `
+            + missing.map((i) => shotLabel(p.shots[i], i)).join(", ")
+            + ". Render them first, or skip them.");
+      return;
+    }
+    const inc = new Set(keep);
+    const clips = keep.map((i) => {
+      const sh = p.shots[i], r = sh[key];
+      return {
+        rec: { name: String(r.name), subfolder: String(r.subfolder || ""),
+               type: r.type === "temp" ? "temp" : "output" },
+        /* only a link to the clip right before it, and only if that one is in */
+        linked: i > 0 && !!sh.link && inc.has(i - 1),
+        frames: songClipFrames(p, i),
+        overlap: songOverlap(p, i) || overlapFrames(),
+        label: shotLabel(sh, i),
+      };
+    });
+    asmBusy = true;
+    asmNote = { text: (opts.auto ? "Render done \u2014 " : "")
+                      + `assembling ${clips.length} clip${clips.length === 1 ? "" : "s"}\u2026 `
+                      + "(the console shows each clip)" };
+    if (shotsOpen) renderShots();
+    try {
+      const r = await api.fetchApi("/cglide/assemble", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: String(p.name || "").trim() || "film", clips, upscale: up,
+          preset: videoPresetName(), container: String(glideVideoWidget("container") || "auto"),
+          fps: Number(glideVideoWidget("fps")) || 24,
+        }),
+      });
+      if (r.status === 404) throw new Error("restart ComfyUI after updating");
+      const d = await r.json().catch(() => ({}));
+      if (r.status !== 200) throw new Error(d.error || ("assemble " + r.status));
+      const where = (d.subfolder ? d.subfolder + "/" : "") + d.name;
+      asmNote = { text: `film \u2192 ${where} \u00b7 ${d.frames} frames \u00b7 ${fmtSecs(d.seconds)}`,
+                  title: (d.segments || []).map((g) => `${g.file}: ${g.keep} of ${g.of} frames`).join("\n") };
+      console.log(`[H3 Studio] Assemble film \u2192 ${where} (${d.frames} frames)`);
+      showInGlideVideo(d.ui);
+    } catch (err) {
+      asmNote = { text: "assemble failed \u2014 " + (err.message || err).split("\n")[0],
+                  title: String(err.message || err), err: true };
+      console.error("[H3 Studio] Assemble film:", err);
+    } finally {
+      asmBusy = false;
+      if (shotsOpen) renderShots();
+    }
+  }
   let runBox = null;              /* the overlay, so it can be torn down */
 
   /* Only 4:2:0 hurts: measured on the same pair, an AV1 yuv420p10le guide made
@@ -6509,7 +7215,9 @@ function buildUI(node) {
     if (!out) return;
     const key = isUp ? "lastUp" : "lastOut";
     const was = sh[key] && sh[key].name;
-    sh[key] = { name: out.name, subfolder: out.subfolder || "", type: out.type || "output" };
+    sh[key] = { name: out.name, subfolder: out.subfolder || "", type: out.type || "output",
+                t: Date.now() };
+    storeRecord(p, sh, key, sh[key]);
     refreshLatentsSoon();
     if (was !== out.name) {
       console.log(`[H3 Studio] ${shotLabel(sh, clip.index - 1)} `
@@ -6853,7 +7561,23 @@ function buildUI(node) {
           run.note = "";
 
           if (state.upscale) {
-            /* nothing to prepare: the node loads the take's own latent */
+            /* The node loads the take's own latent. A linked clip shows the
+               upscale it joins onto in CONTINUE FROM - unless something newer
+               was put there by hand, which then wins. */
+            const pu = linked && pred.lastUp;
+            const c = st.cont;
+            if (pu && !(c && c.file && c.upJoin > (pu.t || 0))) {
+              run.note = "joining onto " + pu.name + "\u2026"; paintRun();
+              try {
+                await raceCancel(adoptInto(st.cont, pu));
+                st.cont.upJoin = Math.max(Date.now(), (pu.t || 0) + 1);
+              } catch (e) {
+                if (String(e && e.message) === "cancelled") throw e;
+                console.warn(`[H3 Studio] Render: could not show ${pu.name} in CONTINUE FROM `
+                           + `(${e.message || e}) \u2014 the node will say if it is gone`);
+              }
+              render(); commit(); stash();
+            }
           } else if (linked && from) {
             run.note = "taking the tail of " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
             await raceCancel(adoptInto(st.cont, from));
@@ -6920,7 +7644,8 @@ function buildUI(node) {
         /* Recorded on the clip, so the next link can find it from any scope,
            in this run or a later one. */
         sh[state.upscale ? "lastUp" : "lastOut"] = { name: out.name,
-                       subfolder: out.subfolder || "", type: out.type || "output" };
+                       subfolder: out.subfolder || "", type: out.type || "output", t: Date.now() };
+        storeRecord(proj(), sh, state.upscale ? "lastUp" : "lastOut", sh[state.upscale ? "lastUp" : "lastOut"]);
         refreshLatentsSoon();
         run.made.push(out.name);
         state.made = run.made.slice();
@@ -6963,6 +7688,9 @@ function buildUI(node) {
         if (!stopped && made.length) {
           console.log(`[H3 Studio] Render: done, ${made.length} clip(s), `
                     + `last file ${made[made.length - 1]}`);
+          /* More than one clip and one-clip renders: put the film together
+             now, so the run ends on the film rather than on its last clip. */
+          if (made.length > 1 && joinOutputsClips()) assembleFilm({ auto: true });
         }
       }
     }
@@ -7347,7 +8075,7 @@ function buildUI(node) {
      the next link continued from the old place. The guide alone holds the
      join. Every workflow saved before v4 is switched off once; turning it
      back on after that sticks. */
-  const SETTING_DEFAULTS = { seamRef: false, seamRefV: 4, clipList: false, overlap: 22 };
+  const SETTING_DEFAULTS = { seamRef: false, seamRefV: 4, clipList: false, overlap: 22, takesAll: false, bandUp: false };
   function settings() {
     node.properties = node.properties || {};
     const cur = node.properties.gcast_settings;
@@ -7389,6 +8117,24 @@ function buildUI(node) {
     /* Continuation overlap. 22 is the tested default; 39 hands the next clip
        more of the previous one's motion, at the cost of re-rendering more of
        it. Only grid sizes exist, so it is a choice of two, not a number. */
+    const trow = el("label", "gcast-set-row line");
+    const tcb = el("input"); tcb.type = "checkbox"; tcb.checked = !!cfg.takesAll;
+    trow.append(tcb, el("div", "t", "Show takes without a latent"));
+    trow.title = "The Takes list (right-click a clip) normally hides renders with no "
+      + "saved latent beside them: they cannot be upscaled or held, and test runs "
+      + "pile them up. Tick to list every render.";
+    tcb.onchange = () => { settings().takesAll = tcb.checked; commit(); };
+    setPanel.append(trow);
+
+    const brow = el("label", "gcast-set-row line");
+    const bcb = el("input"); bcb.type = "checkbox"; bcb.checked = !!cfg.bandUp;
+    brow.append(bcb, el("div", "t", "Show upscale latents on the band outside upscale mode"));
+    brow.title = "The orange chunk over the latent band is each clip's upscale tail "
+      + "latent (dashed = none saved). It always shows in upscale mode; tick to see it "
+      + "in the draft workflow too.";
+    bcb.onchange = () => { settings().bandUp = bcb.checked; commit(); tlSig = ""; paintTimeline(); };
+    setPanel.append(brow);
+
     const orow = el("div", "gcast-set-row line");
     orow.append(el("div", "t", "Continuation overlap"));
     orow.title = "How much of the previous clip a linked clip continues from. "
@@ -7425,7 +8171,11 @@ function buildUI(node) {
     const sseg = el("div", "gcast-seg small lat");
     ["full", "tail", "off"].forEach((v) => {
       const b = el("button", null, v);
-      b.setAttribute("aria-pressed", String(saveLatentMode() === v));
+      /* Upscale mode always saves the tail (the node forces it on its
+         save_latent output), so the switch says so and stays put. */
+      const upm = upscaleOn();
+      b.setAttribute("aria-pressed", String((upm ? "tail" : saveLatentMode()) === v));
+      if (upm) { b.disabled = true; b.title = "Upscale mode: always tail"; }
       b.onclick = (e) => {
         e.stopPropagation();
         settings().saveLatent = v;
@@ -8068,31 +8818,31 @@ function buildUI(node) {
     bRun.disabled = !p.shots.length || !!run;
     bRun.onclick = (e) => { e.stopPropagation(); closeShots();
                             renderAll(selScope.value, cbLook.checked); };
-    /* Orange with a warning sign on purpose: this is not "also upscale my
-       render" - it replaces generation with the saved latents, and belongs in
-       a separate upscale workflow. Ticked by mistake in the draft workflow it
-       would load old takes instead of generating new ones. */
-    const labUp = el("label", "gcast-chk upwarn");
-    const cbUp = el("input"); cbUp.type = "checkbox";
-    cbUp.checked = upscaleOn();
-    cbUp.disabled = !!run;
-    const icoUp = el("span", "ico");
-    icoUp.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">'
-      + '<path fill="currentColor" fill-rule="evenodd" d="M8 1.2 15.2 14H.8L8 1.2Z'
-      + 'M7.2 6v4.2h1.6V6H7.2Zm0 5.4v1.6h1.6v-1.6H7.2Z"/></svg>';
-    const paintUp = () => labUp.classList.toggle("on", cbUp.checked);
-    cbUp.onchange = () => { node.properties.gcast_upscale = cbUp.checked; paintUp();
-                            commit(); paintRunTitle(); };
-    labUp.append(cbUp, icoUp, el("span", null, "upscale pass"));
-    paintUp();
-    labUp.onpointerdown = (e) => e.stopPropagation();
-    labUp.title = "Upscale pass, for an upscale workflow (H3 Studio's latent \u2192 "
-      + "upscaler \u2192 refine, no first sampler). Each clip is built from the full "
-      + "latent saved with its draft (save_latent = full), and linked clips are "
-      + "joined onto the clip before's UPSCALED render. Drafts are left untouched.";
+    /* ASSEMBLE FILM. With Glide Join on output = clip, every clip's render
+       is that clip alone; this puts them together once, each cut where the
+       next one took over (read off the next clip's own file), encoded with
+       Glide Video's preset. The upscale pass assembles the upscales. */
+    const bAsm = el("button", "gcast-btn asm");
+    bAsm.innerHTML =
+        '<svg class="ico" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">'
+      + '<path fill="currentColor" fill-rule="evenodd" d="M2 3h12v10H2V3Zm1.5 1.5v1.2h1.2V4.5H3.5Zm0 2.6v1.8h1.2V7.1H3.5Zm0 3.2v1.2h1.2v-1.2H3.5Z'
+      + 'M11.3 4.5v1.2h1.2V4.5h-1.2Zm0 2.6v1.8h1.2V7.1h-1.2Zm0 3.2v1.2h1.2v-1.2h-1.2ZM6 4.5v7h4.3v-7H6Z"/></svg>'
+      + '<span class="lbl">Assemble</span>';
+    bAsm.disabled = !p.shots.length || !!run || asmBusy;
+    if (asmBusy) bAsm.querySelector(".lbl").textContent = "Assembling\u2026";
+    bAsm.title = (upscaleOn() ? "Put the UPSCALED clips together" : "Put the clips together")
+      + " into one film, in order: each clip cut where the next one took over, encoded once "
+      + "with Glide Video's preset. Skipped clips are left out. For renders made with Glide "
+      + "Join on output = clip; a whole-film render is used as it is.";
+    bAsm.onclick = (e) => { e.stopPropagation(); assembleFilm(); };
     rfoot.append(el("div", "lbl", "Scope"), el("div", "spacer"), selScope,
-                 labLook, labUp, bRun);
+                 labLook, bRun, bAsm);
     shotsPanel.append(rfoot);
+    if (asmNote) {
+      const n = el("div", "gcast-asmnote" + (asmNote.err ? " err" : ""), asmNote.text);
+      n.title = asmNote.title || "";
+      shotsPanel.append(n);
+    }
   }
 
   bShots.onclick = (e) => {
@@ -8665,15 +9415,49 @@ function buildUI(node) {
   inW.onchange = () => { st.width = snap(+inW.value || 768); render(); commit(); };
   inH.onchange = () => { st.height = snap(+inH.value || 768); render(); commit(); };
 
+  /* UPSCALE TO is one size for the whole project: Glide Join refuses to join
+     two upscales of different sizes, so a clip left on the old size only
+     shows up as an error mid Render all. Every change lands in every clip. */
+  function upToAll() {
+    const p = proj();
+    stash();
+    for (const sh of p.shots) {
+      if (sh && sh.state) { sh.state.up_width = st.up_width; sh.state.up_height = st.up_height; }
+    }
+  }
+  selUp.onchange = (v) => {
+    upCustom = v === "custom";
+    if (v === "off") { st.up_width = 0; st.up_height = 0; }
+    else if (v === "custom") {
+      if (!(st.up_width > 0)) {
+        const f = upPresets().find((o) => o.label === "1080p");
+        st.up_width = f.w; st.up_height = f.h;
+      }
+      upToAll(); render(); commit(); inUW.focus(); inUW.select();
+      return;
+    } else {
+      const [w, h] = v.split("x").map(Number);
+      st.up_width = w; st.up_height = h;
+    }
+    upToAll(); render(); commit();
+  };
+  const snapUp = (v, d) => Math.min(8192, Math.max(32, Math.round((+v || d) / 32) * 32));
+  inUW.onchange = () => { st.up_width = snapUp(inUW.value, st.up_width || 1920); upToAll(); render(); commit(); };
+  inUH.onchange = () => { st.up_height = snapUp(inUH.value, st.up_height || 1088); upToAll(); render(); commit(); };
+  inUW.onpointerdown = inUH.onpointerdown = (e) => e.stopPropagation();
+
   bAllRes.onclick = () => {
     const p = proj();
     if (p.shots.length < 2) return;
     /* Rewrites every clip in the project, so it goes through the same .bak the
        other list-rewriting actions use - Revert undoes it. */
-    snapProject("canvas applied to every clip");
+    snapProject("canvas and upscale size applied to every clip");
     stash();                                  // the clip on screen first
     for (const sh of p.shots) {
-      if (sh && sh.state) { sh.state.width = st.width; sh.state.height = st.height; }
+      if (sh && sh.state) {
+        sh.state.width = st.width; sh.state.height = st.height;
+        sh.state.up_width = st.up_width; sh.state.up_height = st.up_height;
+      }
     }
     commit();
     /* The change lands in clips that are not on screen, so without a word here
@@ -8695,6 +9479,18 @@ function buildUI(node) {
 
   bMatch.onclick = () => { st.ref_image_size = "match"; render(); commit(); };
   bMax.onclick = () => { st.ref_image_size = "max"; render(); commit(); };
+  /* In upscale mode the refine multiplier is one value for the whole project,
+     like UPSCALE TO: a chain refined at different factors does not match
+     across its seams, and per-clip values drift apart without anyone noticing.
+     Drafts keep it per clip. */
+  function refineToAll() {
+    if (!upscaleOn()) return;
+    const p = proj();
+    stash();
+    for (const sh of p.shots) {
+      if (sh && sh.state) sh.state.ref_refine_scale = st.ref_refine_scale;
+    }
+  }
   selRefine.onchange = (v) => {
     if (v === "custom") {
       refineCustom = true;
@@ -8704,12 +9500,12 @@ function buildUI(node) {
     }
     refineCustom = false;
     st.ref_refine_scale = +v;
-    render(); commit();
+    refineToAll(); render(); commit();
   };
   inRefine.onchange = () => {
     const v = Number(inRefine.value);
     st.ref_refine_scale = Number.isFinite(v) ? Math.min(4, Math.max(1, Math.round(v * 100) / 100)) : 1;
-    render(); commit();
+    refineToAll(); render(); commit();
   };
 
   ta.addEventListener("input", () => { st.prompt = ta.value; renderTags(); renderCheck(); maybeAC(); commit(); });
@@ -8932,7 +9728,7 @@ function buildUI(node) {
 /* Printed once on load: which build of this file the browser is running.
    Browsers cache extension scripts hard, so "I updated it and nothing
    changed" is answered by this line before anything else. */
-const H3_BUILD = "1.4.8 \u00b7 2026-10-26";
+const H3_BUILD = "1.4.9 \u00b7 2026-10-30";
 console.log(`[H3 Studio] build ${H3_BUILD}`);
 
 app.registerExtension({
