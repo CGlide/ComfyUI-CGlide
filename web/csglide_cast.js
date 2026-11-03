@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-01d - auto Assemble after Render all, film shown in Glide Video";
+const H3_STUDIO_UI_BUILD = "2026-11-03a - Paste prompts: one text, C1 / C2 / ... to each clip";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -1691,6 +1691,26 @@ textarea.gcast-hl-ta.hlon::selection { background:#ffffff30; }
   font-size:12px; font-family:inherit; outline:none; width:100%; box-sizing:border-box; }
 .gcast-sheet input[type="text"]:focus { border-color:var(--h3-accent); }
 .gcast-sheet .hint { color:var(--h3-dim); font-size:11px; line-height:1.45; }
+/* Paste prompts */
+.gcast-sheet.wide { width:680px; max-height:84vh; }
+.gcast-sheet textarea { background:var(--h3-well); color:var(--h3-txt); border:1px solid var(--h3-line);
+  border-radius:6px; padding:8px 10px; font-size:11px; line-height:1.45; outline:none;
+  font-family:ui-monospace,Consolas,monospace; width:100%; box-sizing:border-box;
+  min-height:200px; height:30vh; resize:vertical; }
+.gcast-sheet textarea:focus { border-color:var(--h3-accent); }
+.gcast-pp { display:flex; flex-direction:column; gap:3px; }
+.gcast-pp .r { display:flex; gap:8px; align-items:baseline; padding:4px 8px; border-radius:5px;
+  background:var(--h3-well); border:1px solid var(--h3-line); font-size:11px; }
+.gcast-pp .r .c { font-family:ui-monospace,Consolas,monospace; color:var(--h3-accent); flex:0 0 auto; }
+.gcast-pp .r .nm { flex:0 0 auto; font-weight:600; max-width:180px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.gcast-pp .r .tx { flex:1; min-width:0; color:var(--h3-dim); overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-family:ui-monospace,Consolas,monospace; }
+.gcast-pp .r.new .c { color:#FFA931; }
+.gcast-pp .w { color:#e8a758; font-size:10.5px; }
+.gcast-sheet .foot .gcast-btn { padding:5px 12px; }
+.gcast-sheet .foot .gcast-btn.go { border-color:var(--h3-accent); color:var(--h3-accent); }
+.gcast-sheet .foot .gcast-btn[disabled] { opacity:.35; cursor:default; }
 .gcast-row2 { display:flex; align-items:center; gap:9px; padding:8px 9px;
   border:1px solid var(--h3-line); border-radius:8px; cursor:pointer; background:var(--h3-well); }
 .gcast-row2:hover { border-color:var(--h3-accent); }
@@ -7749,6 +7769,153 @@ function buildUI(node) {
     commit(); paintShotsBtn(); paintPresetName(); renderShots();
   }
 
+  /* ---------------------------------------------------------- Paste prompts
+   * One text with every clip's prompt, each under a marker line - C1, C1:,
+   * Clip 1, ## Clip 1, [C1], **Clip 1 - the wake** - and each section goes
+   * to that clip's prompt. Text after the marker names the clip. Only the
+   * TEXT moves: each clip keeps its own references, which the @image tokens
+   * in the text have to match (the Prompt check strip says when they do not).
+   *
+   * A marker has to be a short line of its own, and a name has to be set off
+   * by a separator (C3 - ambush, C3: ambush), so prose that happens to start
+   * with "Clip 2 shows..." is never taken for one. "Shot" is NOT a marker:
+   * one clip holds several shots and its prompt talks about them. */
+  const CLIP_MARK = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*\[?\s*(?:c|clip)\s*0*(\d{1,3})\s*\]?\s*(?:\*\*|__)?\s*(?:[:.\-\u2013\u2014|)]\s*(.*?))?\s*(?:\*\*|__)?\s*$/i;
+  function clipName(raw) {
+    let n = String(raw || "").replace(/[*_`"\u201c\u201d]/g, "").trim();
+    /* a length or a time is not a name: "(12s)", "12.25 s", "0:12-0:24" */
+    n = n.replace(/^[([]?\s*[\d.:\s\u2192>-]+\s*(?:s|sec|secs|seconds|f|frames)?\s*[)\]]?$/i, "").trim();
+    n = n.replace(/\s*[([][\d.:\s]+(?:s|sec|secs|seconds|f|frames)?[)\]]\s*$/i, "").trim();
+    return n ? n.slice(0, 40) : "";
+  }
+  function splitClipPrompts(text) {
+    const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    const secs = [];
+    let cur = null, before = 0;
+    for (const line of lines) {
+      const m = line.length <= 90 ? CLIP_MARK.exec(line) : null;
+      if (m && +m[1] >= 1) {
+        cur = { n: +m[1], name: clipName(m[2]), lines: [] };
+        secs.push(cur);
+        continue;
+      }
+      if (cur) cur.lines.push(line);
+      else if (line.trim() && !/^\s*```/.test(line)) before += line.trim().length;
+    }
+    for (const sec of secs) {
+      /* code fences come along when a prompt is copied out of a chat */
+      const body = sec.lines.filter((l) => !/^\s*```[\w-]*\s*$/.test(l));
+      while (body.length && !body[0].trim()) body.shift();
+      while (body.length && !body[body.length - 1].trim()) body.pop();
+      sec.text = body.join("\n");
+      delete sec.lines;
+    }
+    return { secs, before };
+  }
+
+  function pastePrompts() {
+    stash();
+    const wrap = el("div", "gcast-modal");
+    const sheet = el("div", "gcast-sheet wide");
+    const body = el("div", "body");
+    const hint = el("div", "hint");
+    hint.innerHTML = "Paste the prompts for several clips in one go. Each clip starts on a line of its own: "
+      + "<b>C1</b>, <b>C2:</b>, <b>Clip 3</b>, <b>## Clip 4</b>\u2026 Text after the marker "
+      + "(<b>C3 \u2014 ambush</b>) names the clip. Only the prompt text changes; every clip keeps "
+      + "its references.";
+    const tx = el("textarea");
+    tx.placeholder = "C1 \u2014 the wake\nsubject_definitions:\n@image1 is \u2026\n\nC2 \u2014 biscuit\n\u2026";
+    tx.spellcheck = false;
+    const pv = el("div", "gcast-pp");
+    body.append(hint, tx, pv);
+    const foot = el("div", "foot");
+    const bCancel = el("button", "gcast-btn ghost", "Cancel");
+    const bGo = el("button", "gcast-btn go", "Apply");
+    foot.append(bCancel, bGo);
+    sheet.append(el("h3", null, "Paste prompts"), body, foot);
+    wrap.append(sheet);
+
+    let parsed = { secs: [], before: 0 };
+    const preview = () => {
+      const p = proj();
+      parsed = splitClipPrompts(tx.value);
+      pv.replaceChildren();
+      const have = Math.max(p.shots.length, p.idx < 0 ? 1 : 0);
+      const seen = new Map();
+      parsed.secs.forEach((sec) => seen.set(sec.n, sec));      // a repeat: last one wins
+      const rows = [...seen.values()].sort((a, b) => a.n - b.n);
+      rows.forEach((sec) => {
+        const i = sec.n - 1;
+        const r = el("div", "r" + (i >= have ? " new" : ""));
+        const target = i < p.shots.length ? shotLabel(p.shots[i], i) : `new Clip ${sec.n}`;
+        r.append(el("span", "c", `C${sec.n} \u2192 ${target}`));
+        if (sec.name) r.append(el("span", "nm", `\u201c${sec.name}\u201d`));
+        const first = sec.text.split("\n").find((l) => l.trim()) || "(empty)";
+        r.append(el("span", "tx", `${sec.text.length} chars \u00b7 ${first.trim()}`));
+        pv.append(r);
+      });
+      const warn = [];
+      if (!rows.length && tx.value.trim()) warn.push("no C1 / Clip 1 marker found \u2014 each clip has to start on its own line");
+      if (parsed.secs.length > rows.length) warn.push("a clip number appears twice \u2014 the last one is used");
+      if (parsed.before) warn.push(`${parsed.before} characters before the first marker are left out`);
+      const empty = rows.filter((s) => !s.text.trim()).map((s) => "C" + s.n);
+      if (empty.length) warn.push(`${empty.join(", ")} ${empty.length === 1 ? "is" : "are"} empty \u2014 skipped`);
+      const extra = rows.length ? Math.max(0, rows[rows.length - 1].n - have) : 0;
+      if (extra) warn.push(`${extra} more clip${extra === 1 ? "" : "s"} than the project has \u2014 Apply will ask before adding them`);
+      warn.forEach((w) => pv.append(el("div", "w", w)));
+      bGo.disabled = !rows.some((s) => s.text.trim());
+      bGo.textContent = rows.length ? `Apply to ${rows.filter((s) => s.text.trim()).length} clip${rows.length === 1 ? "" : "s"}` : "Apply";
+      return rows.filter((s) => s.text.trim());
+    };
+
+    const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey, true); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+    document.addEventListener("keydown", onKey, true);
+    for (const t of ["pointerdown", "pointerup", "wheel", "keydown", "keyup", "copy", "paste", "cut"]) {
+      sheet.addEventListener(t, (e) => e.stopPropagation());
+    }
+    wrap.addEventListener("pointerdown", (e) => { if (e.target === wrap) close(); });
+    tx.addEventListener("input", preview);
+    bCancel.onclick = close;
+    bGo.onclick = () => {
+      const rows = preview();
+      if (!rows.length) return;
+      const p = proj();
+      stash();
+      const have = Math.max(p.shots.length, p.idx < 0 ? 1 : 0);
+      const top = rows[rows.length - 1].n;
+      let upto = have;
+      if (top > have) {
+        const add = top - have;
+        if (confirm(`H3 Studio: the text has clips up to C${top}, the project has ${have}.\n\n`
+                    + `Add ${add} clip${add === 1 ? "" : "s"}? They copy the current clip's references and settings.\n`
+                    + "Cancel fills only the clips that exist.")) upto = top;
+      }
+      snapProject("before Paste prompts");
+      seedFromScreen(p);
+      while (p.shots.length < upto) p.shots.push({ id: uid(), name: "", state: inheritedState() });
+      let done = 0, named = 0;
+      for (const sec of rows) {
+        const i = sec.n - 1;
+        if (i >= p.shots.length) continue;
+        const sh = p.shots[i];
+        if (i === p.idx) { st.prompt = sec.text; ta.value = sec.text; }
+        else { sh.state = sh.state || clone(st); sh.state.prompt = sec.text; }
+        if (sec.name) { sh.name = sec.name; named++; }
+        done++;
+      }
+      console.log(`[H3 Studio] Paste prompts: ${done} clip(s) filled`
+                  + (named ? `, ${named} named` : "") + (upto > have ? `, ${upto - have} added` : ""));
+      close();
+      render(); commit(); paintShotsBtn(); paintPresetName();
+      tlSig = ""; paintTimeline();
+    };
+
+    document.body.append(wrap);
+    preview();
+    setTimeout(() => tx.focus(), 0);
+  }
+
   async function importShot() {
     const files = await pickFilesForOpen();
     if (!files.length) return;
@@ -8696,6 +8863,9 @@ function buildUI(node) {
     bBlank.title = "New empty clip";
     const bImport = el("button", "gcast-btn ghost", "Import\u2026");
     bImport.title = "Add a saved .h3.json or .h3pack to this project as a clip";
+    const bPaste = el("button", "gcast-btn ghost", "Paste\u2026");
+    bPaste.title = "Paste one text holding every clip's prompt, each under a C1 / C2 / Clip 3 \u2014 name "
+      + "line, and each goes to its clip. References are left as they are.";
     const bPRevert = el("button", "gcast-btn ghost revert", "Revert");
     const bPNew = el("button", "gcast-btn ghost", "New");
     const bPSave = el("button", "gcast-btn ghost", "Save project");
@@ -8720,13 +8890,14 @@ function buildUI(node) {
     bAdd.onclick = (e) => { e.stopPropagation(); addShot(false); };
     bBlank.onclick = (e) => { e.stopPropagation(); addShot(true); };
     bImport.onclick = (e) => { e.stopPropagation(); importShot(); };
+    bPaste.onclick = (e) => { e.stopPropagation(); closeShots(); pastePrompts(); };
     bPRevert.onclick = (e) => { e.stopPropagation(); revertProject(); };
     bPNew.onclick = (e) => { e.stopPropagation(); newProject(); };
     bPSave.onclick = (e) => { e.stopPropagation(); saveProject(false); };
     bPSaveAs.onclick = (e) => { e.stopPropagation(); saveProject(true); };
     bPPack.onclick = (e) => { e.stopPropagation(); packProject(); };
     bPOpen.onclick = (e) => { e.stopPropagation(); openProject(); };
-    foot.append(bAdd, bBlank, bImport);
+    foot.append(bAdd, bBlank, bImport, bPaste);
     if (p.shots.length) {
       /* List on/off. The timeline above the node shows every clip anyway, so
          the list can fold away to keep the menu short. */
