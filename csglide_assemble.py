@@ -180,13 +180,25 @@ def plan(clips, log=print):
                      "fps": fps, "label": label})
     if not segs:
         raise ValueError("Assemble: no clips to put together")
-    w, h = segs[0]["w"], segs[0]["h"]
-    bad = [s["label"] for s in segs if (s["w"], s["h"]) != (w, h)]
+    # The film's size is the one MOST clips share, not the first clip's: one
+    # odd render at the start used to make every other clip look wrong.
+    sizes = {}
+    for sg in segs:
+        sizes[(sg["w"], sg["h"])] = sizes.get((sg["w"], sg["h"]), 0) + 1
+    w, h = max(sizes, key=lambda k: (sizes[k], -segs.index(next(
+        sg for sg in segs if (sg["w"], sg["h"]) == k))))
+    bad = [sg for sg in segs if (sg["w"], sg["h"]) != (w, h)]
     if bad:
-        raise ValueError("Assemble: %s %s not %dx%d like %s. Every clip of a film "
-                         "has to be the same size - an upscaled and a draft render "
-                         "mixed?" % (", ".join(bad), "is" if len(bad) == 1 else "are",
-                                     w, h, segs[0]["label"]))
+        raise ValueError(
+            "Assemble: %s %s a different size from the rest of the film (%dx%d). "
+            "Right-click %s in the strip -> Takes and pick a %dx%d render, or render "
+            "%s again. (A video bigger than its latent is usually an old render made "
+            "with a refine pass inside the draft workflow.)"
+            % (", ".join("%s (%s, %dx%d)" % (sg["label"], os.path.basename(sg["path"]),
+                                             sg["w"], sg["h"]) for sg in bad),
+               "is" if len(bad) == 1 else "are", w, h,
+               "it" if len(bad) == 1 else "each", w, h,
+               "it" if len(bad) == 1 else "them"))
     return segs
 
 

@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-03b - fix studio panel width on select (#35)";
+const H3_STUDIO_UI_BUILD = "2026-11-05c - Scope box: one scope for Render and Assemble";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -929,6 +929,14 @@ const CSS = `
 .gcast-runmode { background:#191919; color:#ccc; border:1px solid #333; border-radius:4px;
   font-size:10px; padding:2px 4px; font-family:inherit; }
 .gcast-shots-foot.run .gcast-chk { font-size:10px; gap:4px; }
+/* One box: the Scope on top, Render and Assemble side by side under it, so
+   it reads as the setting of BOTH buttons and not just the one beside it. */
+.gcast-scopebox { display:flex; flex-direction:column; gap:6px; width:100%;
+  border:1px solid var(--h3-line); border-radius:7px; padding:7px 8px;
+  background:#ffffff05; box-sizing:border-box; }
+.gcast-scopebox .r1, .gcast-scopebox .r2 { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.gcast-scopebox .both { color:var(--h3-dim); font-size:9.5px; font-style:italic; }
+.gcast-scopebox .r2 .gcast-btn { flex:1 1 0; justify-content:center; padding:5px 8px; }
 /* the upscale pass is a different workflow, not an extra: warn, in orange */
 .gcast-chk.upwarn { color:#FFA931; }
 .gcast-chk.upwarn .ico { display:inline-flex; color:#FFA931; }
@@ -6893,7 +6901,7 @@ function buildUI(node) {
     if (!sh) return;
     const was = sh.lastUp && sh.lastUp.name;
     sh.lastUp = { name: t.name, subfolder: t.subfolder || "",
-                  type: t.type === "temp" ? "temp" : "output", t: Date.now() };
+                  type: t.type === "temp" ? "temp" : "output", t: Date.now(), pick: true };
     storeRecord(p, sh, "lastUp", sh.lastUp);
     console.log(`[H3 Studio] ${shotLabel(sh, i)}: upscale to join onto \u2192 ${t.name}`
                 + (was && was !== t.name ? ` (was ${was})` : ""));
@@ -7006,6 +7014,58 @@ function buildUI(node) {
     } catch (e) { console.warn("[H3 Studio] could not show the film in Glide Video:", e); }
     return false;
   }
+  /* Before assembling: each clip's NEWEST render of the right kind, read off
+     the disk, unless a take was picked by hand. The browser records a render
+     when it sees it finish, so one it missed - Chrome restarted mid-run, a
+     render queued from elsewhere - leaves the record on an older take, and
+     the film would be built from that. Drafts must carry a latent at the
+     clip's canvas (so an old test at another size is never taken); upscales
+     are the ones the server flags as upscales. */
+  async function newestTakes(p, idxs, up) {
+    const key = up ? "lastUp" : "lastOut";
+    const notes = [];
+    for (const i of idxs) {
+      const sh = p.shots[i];
+      const cur = sh && sh[key];
+      if (!sh || (cur && cur.pick)) continue;
+      const W = Number(((i === p.idx) ? st : sh.state || {}).width) || 0;
+      const H = Number(((i === p.idx) ? st : sh.state || {}).height) || 0;
+      const recOf = (o) => (o && o.name)
+        ? { name: String(o.name), subfolder: String(o.subfolder || ""),
+            type: o.type === "temp" ? "temp" : "output" } : null;
+      let takes = null;
+      try {
+        const r = await api.fetchApi("/cglide/clip_takes", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clip: {
+            name: String(sh.name || "").trim(), index: i + 1, count: p.shots.length,
+            project: String(p.name || "").trim(),
+            rec: recOf(sh.lastOut), up: recOf(sh.lastUp), width: W, height: H } }),
+        });
+        if (r.status !== 200) continue;
+        takes = (await r.json()).takes || [];
+      } catch (e) { continue; }
+      const ok = takes.filter((t) => up ? t.upscale
+        : (!t.upscale && (t.full || t.tail) && (!t.w || !W || (t.w === W && t.h === H))));
+      const best = ok[0];                     // the server lists newest first
+      if (!best) continue;
+      const same = (t) => cur && t.name === cur.name && (t.subfolder || "") === (cur.subfolder || "");
+      const now = takes.find(same);
+      if (now && (now === best || (now.mtime || 0) >= (best.mtime || 0))) continue;
+      sh[key] = { name: best.name, subfolder: best.subfolder || "",
+                  type: best.type === "temp" ? "temp" : "output", t: Date.now() };
+      storeRecord(p, sh, key, sh[key]);
+      notes.push(`${shotLabel(sh, i)} \u2192 ${best.name}` + (cur && cur.name ? ` (was ${cur.name})` : ""));
+    }
+    if (notes.length) {
+      console.log(`[H3 Studio] Assemble: newer ${up ? "upscales" : "renders"} found on disk \u2014 `
+                  + notes.join(", "));
+      commit();
+      latSig = null; refreshLatentsSoon();
+    }
+    return notes;
+  }
+
   async function assembleFilm(opts) {
     opts = opts || {};
     if (asmBusy || run) return;
@@ -7013,7 +7073,17 @@ function buildUI(node) {
     stash();
     const up = upscaleOn();
     const key = up ? "lastUp" : "lastOut";
-    const keep = p.shots.map((sh, i) => i).filter((i) => !p.shots[i].off);
+    /* Same Scope as Render: the whole project, this clip's linked group
+       (chain), or from this clip on. Skipped clips are left out. */
+    const scope = opts.scope || node.properties.gcast_run_scope || "all";
+    const keep = scopeRange(scope, p.idx >= 0 ? p.idx : 0).filter((i) => !p.shots[i].off);
+    /* the records first: whatever the browser missed is still on disk */
+    asmBusy = true;
+    asmNote = { text: "checking each clip's newest render\u2026" };
+    if (shotsOpen) renderShots();
+    let found = [];
+    try { found = await newestTakes(p, keep, up); } finally { asmBusy = false; }
+    asmNote = null;
     const missing = keep.filter((i) => !(p.shots[i][key] && p.shots[i][key].name));
     if (!keep.length) return;
     if (missing.length) {
@@ -7058,7 +7128,8 @@ function buildUI(node) {
       const d = await r.json().catch(() => ({}));
       if (r.status !== 200) throw new Error(d.error || ("assemble " + r.status));
       const where = (d.subfolder ? d.subfolder + "/" : "") + d.name;
-      asmNote = { text: `film \u2192 ${where} \u00b7 ${d.frames} frames \u00b7 ${fmtSecs(d.seconds)}`,
+      asmNote = { text: `film \u2192 ${where} \u00b7 ${d.frames} frames \u00b7 ${fmtSecs(d.seconds)}`
+                      + (found.length ? ` \u00b7 ${found.length} newer take${found.length === 1 ? "" : "s"} used` : ""),
                   title: (d.segments || []).map((g) => `${g.file}: ${g.keep} of ${g.of} frames`).join("\n") };
       console.log(`[H3 Studio] Assemble film \u2192 ${where} (${d.frames} frames)`);
       showInGlideVideo(d.ui);
@@ -9003,11 +9074,18 @@ function buildUI(node) {
     if (asmBusy) bAsm.querySelector(".lbl").textContent = "Assembling\u2026";
     bAsm.title = (upscaleOn() ? "Put the UPSCALED clips together" : "Put the clips together")
       + " into one film, in order: each clip cut where the next one took over, encoded once "
-      + "with Glide Video's preset. Skipped clips are left out. For renders made with Glide "
-      + "Join on output = clip; a whole-film render is used as it is.";
+      + "with Glide Video's preset. Follows the Scope: whole project, this clip's linked "
+      + "group (chain), or from this clip on. Skipped clips are left out.";
     bAsm.onclick = (e) => { e.stopPropagation(); assembleFilm(); };
-    rfoot.append(el("div", "lbl", "Scope"), el("div", "spacer"), selScope,
-                 labLook, bRun, bAsm);
+    selScope.title = "Which clips Render AND Assemble work on: this clip, this clip's linked "
+      + "group (chain), from this clip on, or the whole project.";
+    const box = el("div", "gcast-scopebox");
+    const r1 = el("div", "r1"), r2 = el("div", "r2");
+    r1.append(el("div", "lbl", "Scope"), selScope,
+              el("span", "both", "\u2193 for Render and Assemble"), el("div", "spacer"), labLook);
+    r2.append(bRun, bAsm);
+    box.append(r1, r2);
+    rfoot.append(box);
     shotsPanel.append(rfoot);
     if (asmNote) {
       const n = el("div", "gcast-asmnote" + (asmNote.err ? " err" : ""), asmNote.text);
