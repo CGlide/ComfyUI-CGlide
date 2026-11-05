@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-05c - Scope box: one scope for Render and Assemble";
+const H3_STUDIO_UI_BUILD = "2026-11-05d - Upscale to: portrait canvases (short edge = the p)";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -2505,11 +2505,20 @@ function buildUI(node) {
     const fam = findRatio(st.width, st.height);
     const ab = fam && /^(\d+):(\d+)$/.exec(fam.label);
     const r = ab ? (+ab[1] / +ab[2]) : st.width / st.height;
-    return UP_HEIGHTS.map(([h, lab]) => {
-      const w = Math.max(32, Math.round((h * r) / 32) * 32), hh = Math.max(32, Math.round(h / 32) * 32);
+    /* "1080p" is the SHORT edge, as with any video: 1920x1088 landscape,
+       1088x1920 portrait. It used to be the height whatever the shape, so a
+       9:16 canvas got 608x1088 for 1080p. */
+    const g = (v) => Math.max(32, Math.round(v / 32) * 32);
+    return UP_HEIGHTS.map(([p, lab]) => {
+      const w = r >= 1 ? g(p * r) : g(p), hh = r >= 1 ? g(p) : g(p / r);
       return { label: lab, value: `${w}x${hh}`, note: `${w} x ${hh}`, w, h: hh };
     });
   };
+  /* The upscale size is shared by the whole project but a project can mix
+     landscape and portrait clips, so it is read in the CLIP's orientation:
+     1920x1088 set on a landscape clip means 1088x1920 on a portrait one. The
+     node turns it the same way when it renders. */
+  const upFit = (w, h) => ((w >= h) === (st.width >= st.height)) ? [w, h] : [h, w];
 
   const cLen = el("div", "gcast-card");
   cLen.append(el("div", "gcast-label", "Length"));
@@ -4566,20 +4575,21 @@ function buildUI(node) {
     {
       const pre = upPresets();
       const on = st.up_width > 0 && st.up_height > 0;
+      const [uw, uh] = on ? upFit(st.up_width, st.up_height) : [0, 0];
       selUp.setOptions([{ label: "Off", value: "off", note: "draft \u00d7 refine" }]
         .concat(pre, [{ label: "Custom", value: "custom" }]));
-      const hit = on && pre.find((o) => o.w === st.up_width && o.h === st.up_height);
+      const hit = on && pre.find((o) => o.w === uw && o.h === uh);
       const custom = on && (!hit || upCustom);
       selUp.value = !on ? "off" : custom ? "custom" : hit.value;
       selUp.el.classList.toggle("on", on);
       [inUW, upX, inUH].forEach((e) => { e.style.display = custom ? "" : "none"; });
       canvasNote.style.display = custom ? "none" : "";
-      if (document.activeElement !== inUW) inUW.value = on ? st.up_width : "";
-      if (document.activeElement !== inUH) inUH.value = on ? st.up_height : "";
+      if (document.activeElement !== inUW) inUW.value = on ? uw : "";
+      if (document.activeElement !== inUH) inUH.value = on ? uh : "";
       if (on) {
-        const ump = (st.up_width * st.up_height / 1e6).toFixed(2);
-        const f = Math.round(Math.sqrt((st.up_width * st.up_height) / (st.width * st.height)) * 100) / 100;
-        selUp.el.title = `Upscale pass: ${st.width}\u00d7${st.height} \u2192 ${st.up_width}\u00d7${st.up_height}`
+        const ump = (uw * uh / 1e6).toFixed(2);
+        const f = Math.round(Math.sqrt((uw * uh) / (st.width * st.height)) * 100) / 100;
+        selUp.el.title = `Upscale pass: ${st.width}\u00d7${st.height} \u2192 ${uw}\u00d7${uh}`
           + ` (${ump} MP, \u00d7${f}). Same for every clip in the project. Drafts still go out at the canvas.`
           + " The refine multiplier is separate: set it to roughly the same factor.";
       } else {
@@ -9691,8 +9701,11 @@ function buildUI(node) {
     upToAll(); render(); commit();
   };
   const snapUp = (v, d) => Math.min(8192, Math.max(32, Math.round((+v || d) / 32) * 32));
-  inUW.onchange = () => { st.up_width = snapUp(inUW.value, st.up_width || 1920); upToAll(); render(); commit(); };
-  inUH.onchange = () => { st.up_height = snapUp(inUH.value, st.up_height || 1088); upToAll(); render(); commit(); };
+  /* the fields show the size in this clip's orientation, so store what they show */
+  inUW.onchange = () => { st.up_width = snapUp(inUW.value, +inUW.value || 1920);
+    st.up_height = snapUp(inUH.value, +inUH.value || 1088); upToAll(); render(); commit(); };
+  inUH.onchange = () => { st.up_height = snapUp(inUH.value, +inUH.value || 1088);
+    st.up_width = snapUp(inUW.value, +inUW.value || 1920); upToAll(); render(); commit(); };
   inUW.onpointerdown = inUH.onpointerdown = (e) => e.stopPropagation();
 
   bAllRes.onclick = () => {

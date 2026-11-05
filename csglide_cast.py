@@ -2209,6 +2209,11 @@ class CSGlideCast:
                 if cfg.get("up_width") and cfg.get("up_height"):
                     out_w = max(g, int(round(cfg["up_width"] / g)) * g)
                     out_h = max(g, int(round(cfg["up_height"] / g)) * g)
+                    # The size is shared by the whole project, which can mix
+                    # landscape and portrait clips: read it in THIS clip's
+                    # orientation (1920x1088 on a 9:16 draft is 1088x1920).
+                    if (out_w >= out_h) != (width >= height):
+                        out_w, out_h = out_h, out_w
                 else:
                     out_w = max(g, int(round(width * refine_mul / g)) * g)
                     out_h = max(g, int(round(height * refine_mul / g)) * g)
