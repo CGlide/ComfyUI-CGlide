@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-05d - Upscale to: portrait canvases (short edge = the p)";
+const H3_STUDIO_UI_BUILD = "2026-11-05e - render overlay without backdrop blur (zoom tiling); portrait upscale";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -917,8 +917,11 @@ const CSS = `
    one by one, and Stop is the only thing that stays live. */
 .gcast.running { position:relative; }
 .gcast-run { position:absolute; inset:0; z-index:60; display:flex;
-  align-items:center; justify-content:center; background:#07070799;
-  backdrop-filter:blur(1.5px); }
+  align-items:center; justify-content:center; background:#070707b8; }
+/* No backdrop-filter here: inside a node the canvas zoom scales this layer,
+   and Chrome then repeats the blurred backdrop as tiles - the whole studio
+   drawn over and over in a grid while zooming during a Render. A slightly
+   darker tint does the same job of pushing the panel back. */
 .gcast-run .card { display:flex; flex-direction:column; gap:7px; align-items:center;
   padding:16px 22px; border-radius:8px; background:#141414f2;
   border:1px solid var(--h3-accent); box-shadow:0 10px 34px #000a; }
