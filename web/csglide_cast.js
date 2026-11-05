@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-03a - Paste prompts: one text, C1 / C2 / ... to each clip";
+const H3_STUDIO_UI_BUILD = "2026-11-03b - fix studio panel width on select (#35)";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -9902,6 +9902,22 @@ function buildUI(node) {
 const H3_BUILD = "1.4.9 \u00b7 2026-10-30";
 console.log(`[H3 Studio] build ${H3_BUILD}`);
 
+/* Keep the studio overlay on the node's width. A stored width that is not
+   the node is the properties-panel write described at addDOMWidget. */
+function guardStudioWidth(widget, node) {
+  let held;
+  Object.defineProperty(widget, "width", {
+    configurable: true,
+    enumerable: true,
+    get() { return held; },
+    set(v) {
+      const nodeW = node.size && +node.size[0];
+      if (nodeW && Number.isFinite(+v) && Math.abs(+v - nodeW) > 2) return;
+      held = Number.isFinite(+v) ? +v : undefined;
+    },
+  });
+}
+
 app.registerExtension({
   name: "cglide.glidecast",
   async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -9954,7 +9970,20 @@ app.registerExtension({
          sit BESIDE the panel, not above it - tested in a real ComfyUI, that
          made the minimum taller than the node and a drag upward grew it. The
          floor is onResize's, from the measured content. */
-      const uiWidget = this.addDOMWidget("h3_ui", "div", ui.root, { serialize: false, hideOnZoom: false });
+      const uiWidget = this.addDOMWidget("h3_ui", "div", ui.root, {
+        serialize: false, hideOnZoom: false, hideInPanel: true,
+      });
+      if (uiWidget.options) uiWidget.options.hideInPanel = true;
+      /* Clicking the node selects it, and the right-hand properties panel
+         draws any widget it does not recognise through WidgetLegacy. That
+         draw writes widget.width to the PANEL canvas clientWidth
+         (ComfyUI_frontend #11574). The graph overlay then sizes this studio
+         from `widget.width ?? node.width`, minus the DOM widget's 10px
+         margin on each side — a ~468px panel becomes width:448px on the
+         black workspace, while the node itself stays wide.
+         hideInPanel keeps h3_ui out of that panel. The setter drops a width
+         that is not the node's, for a frontend that still draws it. */
+      guardStudioWidth(uiWidget, this);
 
       /* The widget's own wrapper is <div class="dom-widget">, sitting inside
        * .isolate inside #graph-canvas-container. ONLY the dom-widget div may be
