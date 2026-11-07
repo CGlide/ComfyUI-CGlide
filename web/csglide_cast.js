@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-05e - render overlay without backdrop blur (zoom tiling); portrait upscale";
+const H3_STUDIO_UI_BUILD = "2026-11-07a - Assemble on "this clip" takes its chain; re-assembles after a one-clip render";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -7088,7 +7088,10 @@ function buildUI(node) {
     const key = up ? "lastUp" : "lastOut";
     /* Same Scope as Render: the whole project, this clip's linked group
        (chain), or from this clip on. Skipped clips are left out. */
-    const scope = opts.scope || node.properties.gcast_run_scope || "all";
+    let scope = opts.scope || node.properties.gcast_run_scope || "all";
+    /* A film of one clip is never what is wanted: on "this clip" (the usual
+       scope for re-rolling one clip) Assemble takes the clip's linked chain. */
+    if (scope === "clip") scope = "chain";
     const keep = scopeRange(scope, p.idx >= 0 ? p.idx : 0).filter((i) => !p.shots[i].off);
     /* the records first: whatever the browser missed is still on disk */
     asmBusy = true;
@@ -7794,7 +7797,11 @@ function buildUI(node) {
                     + `last file ${made[made.length - 1]}`);
           /* More than one clip and one-clip renders: put the film together
              now, so the run ends on the film rather than on its last clip. */
-          if (made.length > 1 && joinOutputsClips()) assembleFilm({ auto: true });
+          /* One clip re-rendered inside a chain counts too: its film is out of
+             date now, so the chain is put back together around it. */
+          const inChain = scopeRange("chain", state.startIdx).length > 1;
+          if ((made.length > 1 || inChain) && joinOutputsClips())
+            assembleFilm(made.length === 1 ? { auto: true, scope: "chain" } : { auto: true });
         }
       }
     }
@@ -9088,7 +9095,7 @@ function buildUI(node) {
     bAsm.title = (upscaleOn() ? "Put the UPSCALED clips together" : "Put the clips together")
       + " into one film, in order: each clip cut where the next one took over, encoded once "
       + "with Glide Video's preset. Follows the Scope: whole project, this clip's linked "
-      + "group (chain), or from this clip on. Skipped clips are left out.";
+      + "group (chain - also on \u201cthis clip\u201d), or from this clip on. Skipped clips are left out.";
     bAsm.onclick = (e) => { e.stopPropagation(); assembleFilm(); };
     selScope.title = "Which clips Render AND Assemble work on: this clip, this clip's linked "
       + "group (chain), from this clip on, or the whole project.";
