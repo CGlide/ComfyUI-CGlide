@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-07a - Assemble on "this clip" takes its chain; re-assembles after a one-clip render";
+const H3_STUDIO_UI_BUILD = "2026-11-07b - fix: build label broke the file; Assemble on this clip takes its chain";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
