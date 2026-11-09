@@ -643,18 +643,22 @@ const CSS = `
 .gcast-tkpv .cap { max-width:min(480px,46vw); font-size:10px; color:var(--h3-dim);
   padding:5px 2px 0; font-family:ui-monospace,Consolas,monospace;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.gcast-tkpv .pick { all:unset; pointer-events:auto; display:block; margin:6px 2px 2px;
+/* actions row: "Use this take" on the left, "Delete" on the right; a lone
+   Delete keeps the right edge via its auto left margin */
+.gcast-tkpv .act { display:flex; align-items:center; justify-content:space-between;
+  gap:6px; margin:6px 2px 2px; }
+.gcast-tkpv .pick { all:unset; pointer-events:auto; display:block;
   padding:4px 8px; border-radius:6px; font-size:10.5px; text-align:center;
   color:#091d21; background:var(--h3-accent); cursor:pointer; }
 .gcast-tkpv .pick:hover { filter:brightness(1.15); }
-.gcast-tkpv .del { all:unset; pointer-events:auto; display:block; margin:4px 2px 2px;
+.gcast-tkpv .del { all:unset; pointer-events:auto; display:block;
   padding:4px 8px; border-radius:6px; font-size:10.5px; text-align:center;
   color:#ffd0d0; background:#5a2126; border:1px solid #7a2e34; cursor:pointer; }
 .gcast-tkpv .del:hover { background:#70262c; }
 .gcast-tkpv .del.armed { color:#fff; background:#a63a42; border-color:#d16168; }
 .gcast-tkpv .del:disabled { opacity:.55; cursor:default; }
-/* both actions hang to the right, sized to their label (declare last: it wins) */
-.gcast-tkpv .pick, .gcast-tkpv .del { width:fit-content; margin-left:auto; }
+.gcast-tkpv .pick, .gcast-tkpv .del { width:fit-content; margin:0; }
+.gcast-tkpv .del { margin-left:auto; }
 .gcast-cpal .tk .dot { width:7px; height:7px; border-radius:50%; flex:none;
   box-shadow:inset 0 0 0 1px var(--h3-line); }
 .gcast-cpal .tk button.on .dot { background:#FF9CF9; box-shadow:none; }
@@ -7012,7 +7016,11 @@ function buildUI(node) {
       tkpEl.append(el("div", "cap", `${t.name} — .${ext.split(".").pop()} can't play in the browser`));
       tkpEl.append(el("div", "cap", "open it in the outputs folder instead"));
       const del = takeDeleteButton(t, canDelete, (msg) => { failCap().textContent = msg; }, onRefresh);
-      if (del) tkpEl.append(del);
+      if (del) {
+        const acts = el("div", "act");
+        acts.append(del);
+        tkpEl.append(acts);
+      }
       document.body.append(tkpEl);
       placeTakePreviewPanel(row, tkpEl);
       return;
@@ -7027,8 +7035,9 @@ function buildUI(node) {
     const cap = el("div", "cap",
       `${t.name}${t.subfolder ? " · " + t.subfolder : ""}${t.w ? ` · ${t.w}\u00d7${t.h}` : ""} · ${takeWhen(t.mtime)}`);
     tkpEl.append(v); tkpEl.append(cap);
-    tkpEl.append(el("button", "pick", t.upscale ? "Join onto this upscale" : "Use this take"));
-    const pick = tkpEl.lastChild;
+    const acts = el("div", "act");
+    acts.append(el("button", "pick", t.upscale ? "Join onto this upscale" : "Use this take"));
+    const pick = acts.lastChild;
     pick.type = "button";
     pick.addEventListener("click", (ev) => {
       ev.preventDefault(); ev.stopPropagation();
@@ -7041,7 +7050,8 @@ function buildUI(node) {
       if (tkpEl) placeTakePreviewPanel(row, tkpEl);
     });
     const del = takeDeleteButton(t, canDelete, (msg) => { failCap().textContent = msg; }, onRefresh);
-    if (del) tkpEl.append(del);
+    if (del) acts.append(del);
+    tkpEl.append(acts);
     document.body.append(tkpEl);
     placeTakePreviewPanel(row, tkpEl);
   }
