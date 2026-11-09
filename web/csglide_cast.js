@@ -10257,7 +10257,7 @@ function buildUI(node) {
 /* Printed once on load: which build of this file the browser is running.
    Browsers cache extension scripts hard, so "I updated it and nothing
    changed" is answered by this line before anything else. */
-const H3_BUILD = "1.4.9 \u00b7 2026-10-30";
+const H3_BUILD = "1.5.0 \u00b7 2026-11-09";
 console.log(`[H3 Studio] build ${H3_BUILD}`);
 
 /* Keep the studio overlay on the node's width. A stored width that is not

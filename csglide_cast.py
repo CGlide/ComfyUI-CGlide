@@ -15,6 +15,7 @@ import math
 import os
 import re
 import struct
+import time
 
 import numpy as np
 from collections import deque
@@ -1380,13 +1381,34 @@ try:
             fps = float(FPS)
         prefix = "%s/%s_film%s" % (project, project, "_upscale" if data.get("upscale") else "")
 
+        # Progress for the Glide Video banner. send_sync is thread-safe (it
+        # hands the message to the server loop), so the worker thread can call
+        # it directly. Every message carries the job id, so a banner never
+        # mixes two runs.
+        job = "%x" % int(time.time() * 1000)
+        up = bool(data.get("upscale"))
+
+        def report(msg):
+            try:
+                _PromptServer.instance.send_sync(
+                    "cglide.assemble", dict(msg, id=job, upscale=up, project=project))
+            except Exception:
+                pass
+
+        report({"stage": "start", "clips": len(clips), "done": 0, "total": 0})
+
         def work():
-            return _asm.assemble(clips, preset, container=container, fps=fps, prefix=prefix)
+            return _asm.assemble(clips, preset, container=container, fps=fps, prefix=prefix,
+                                 report=report)
         try:
             res = await asyncio.get_running_loop().run_in_executor(None, work)
         except Exception as exc:
             print("[Assemble] failed: %s" % exc)
+            report({"stage": "error", "error": str(exc).split("\n")[0][:300]})
             return _web.json_response({"error": str(exc)}, status=500)
+        report({"stage": "done", "done": res.get("frames", 0), "total": res.get("frames", 0),
+                "seconds": res.get("seconds", 0), "name": res.get("name", ""),
+                "clips": len(res.get("segments") or [])})
         res = dict(res)
         res.pop("path", None)
         res["type"] = "output"
