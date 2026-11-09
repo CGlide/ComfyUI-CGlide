@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-07b - fix: build label broke the file; Assemble on this clip takes its chain";
+const H3_STUDIO_UI_BUILD = "2026-11-08b - Assemble banner driven from H3 Studio too";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -922,12 +922,66 @@ const CSS = `
    and Chrome then repeats the blurred backdrop as tiles - the whole studio
    drawn over and over in a grid while zooming during a Render. A slightly
    darker tint does the same job of pushing the panel back. */
-.gcast-run .card { display:flex; flex-direction:column; gap:7px; align-items:center;
-  padding:16px 22px; border-radius:8px; background:#141414f2;
-  border:1px solid var(--h3-accent); box-shadow:0 10px 34px #000a; }
-.gcast-run .ttl { font-size:11px; color:var(--h3-accent); letter-spacing:.04em; }
-.gcast-run .msg { font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#e8e8e8; }
+.gcast-run { background:radial-gradient(ellipse at center, #000000a0 0%, #000000d0 100%); }
+.gcast-run .card { display:flex; flex-direction:column; gap:8px; align-items:stretch;
+  width:min(92%, 380px); box-sizing:border-box; padding:13px 16px 14px; border-radius:11px;
+  background:linear-gradient(180deg, #222 0%, #151515 100%);
+  border:1px solid color-mix(in srgb, var(--h3-accent) 45%, transparent);
+  box-shadow:0 16px 38px #000c, 0 4px 10px #0008,
+             0 0 28px color-mix(in srgb, var(--h3-accent) 22%, transparent),
+             inset 0 1px 0 #ffffff10;
+  animation:gcast-run-in .3s cubic-bezier(.2,.9,.3,1.2); }
+@keyframes gcast-run-in { from { opacity:0; transform:translateY(6px) scale(.97); } }
+.gcast-run .head { display:flex; align-items:center; gap:8px; }
+.gcast-run .spin { width:12px; height:12px; flex:0 0 auto; border-radius:50%;
+  border:2px solid color-mix(in srgb, var(--h3-accent) 25%, transparent);
+  border-top-color:var(--h3-accent); animation:gcast-run-spin .8s linear infinite; }
+.gcast-run.stopping .spin { border-top-color:#ffb020; animation-duration:1.6s; }
+@keyframes gcast-run-spin { to { transform:rotate(360deg); } }
+.gcast-run .ttl { font-size:13px; font-weight:700; color:var(--h3-accent); letter-spacing:.03em;
+  text-shadow:0 0 12px color-mix(in srgb, var(--h3-accent) 45%, transparent); }
+.gcast-run.stopping .ttl { color:#ffb020; text-shadow:0 0 12px #ffb02066; }
+.gcast-run .tag { margin-left:auto; font-size:9px; font-weight:700; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--h3-accent); border-radius:999px; padding:1px 7px;
+  border:1px solid color-mix(in srgb, var(--h3-accent) 45%, transparent); }
+.gcast-run .tag.up { color:#ff9a2e; border-color:#ff9a2e73; }
+.gcast-run .msg { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:#ededed;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gcast-run .pips { display:flex; gap:4px; flex-wrap:wrap; }
+.gcast-run .pip { flex:1 1 0; min-width:8px; max-width:46px; height:5px; border-radius:999px;
+  background:#2c2c2c; box-shadow:inset 0 1px 2px #0009; }
+.gcast-run .pip.done { background:var(--h3-accent); box-shadow:0 0 6px color-mix(in srgb, var(--h3-accent) 55%, transparent); }
+.gcast-run .pip.cur { background:color-mix(in srgb, var(--h3-accent) 55%, #2c2c2c);
+  animation:gcast-run-pip 1s ease-in-out infinite alternate; }
+@keyframes gcast-run-pip { to { background:var(--h3-accent); } }
+.gcast-run .track { position:relative; height:7px; border-radius:999px; overflow:hidden;
+  background:#2b2b2b; box-shadow:inset 0 1px 2px #0009; }
+.gcast-run .fill { position:absolute; left:0; top:0; bottom:0; width:0%; border-radius:999px;
+  overflow:hidden; transition:width .2s linear;
+  background:linear-gradient(90deg, color-mix(in srgb, var(--h3-accent) 70%, #000), var(--h3-accent));
+  box-shadow:0 0 10px color-mix(in srgb, var(--h3-accent) 60%, transparent); }
+.gcast-run .fill::after { content:""; position:absolute; top:0; bottom:0; left:-40%; width:40%;
+  background:linear-gradient(90deg, transparent, #ffffff70, transparent);
+  animation:gcast-run-sheen 1.3s ease-in-out infinite; }
+@keyframes gcast-run-sheen { to { left:110%; } }
+.gcast-run .track.wait .fill { width:28% !important; transition:none;
+  animation:gcast-run-wait 1.1s ease-in-out infinite alternate; }
+@keyframes gcast-run-wait { from { margin-left:0%; } to { margin-left:72%; } }
+.gcast-run .row { display:flex; justify-content:space-between; gap:10px;
+  font-size:10px; color:#8c8c8c; font-variant-numeric:tabular-nums; }
+.gcast-run .row .node { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gcast-run .row .pct { color:var(--h3-accent); font-weight:700; }
 .gcast-run .sub { font-size:10px; color:var(--h3-dim); min-height:12px; }
+.gcast-run .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;
+  border-top:1px solid #ffffff12; padding-top:8px; }
+.gcast-run .stat { display:flex; flex-direction:column; align-items:center; gap:1px; }
+.gcast-run .stat b { font-size:11.5px; color:#e6e6e6; font-weight:600;
+  font-family:ui-monospace,Consolas,monospace; font-variant-numeric:tabular-nums; }
+.gcast-run .stat span { font-size:9px; color:#777; text-transform:uppercase; letter-spacing:.06em; }
+.gcast-run .last { font-size:10px; color:#777; text-align:center;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gcast-run .last b { color:#aaa; font-weight:500; }
+.gcast-run .stopbtn { align-self:center; margin-top:2px; }
 .gcast-shots-foot.run .lbl { color:var(--h3-accent); }
 .gcast-runmode { background:#191919; color:#ccc; border:1px solid #333; border-radius:4px;
   font-size:10px; padding:2px 4px; font-family:inherit; }
@@ -2489,6 +2543,18 @@ function buildUI(node) {
   upLabel.onpointerdown = (e) => e.stopPropagation();
   cbUp.onchange = () => {
     node.properties.gcast_upscale = cbUp.checked;
+    /* Ticking it on starts from the usual upscale setup: 1080p if no size is
+       set yet, and refine 2x (or the factor last picked in upscale mode). */
+    if (cbUp.checked) {
+      if (!(st.up_width > 0 && st.up_height > 0)) {
+        const f = upPresets().find((o) => o.label === "1080p");
+        if (f) { st.up_width = f.w; st.up_height = f.h; upCustom = false; upToAll(); }
+      }
+      const rm = Number(node.properties.gcast_up_refine);
+      st.ref_refine_scale = Number.isFinite(rm) && rm >= 1 ? Math.min(4, rm) : 2;
+      refineCustom = false;
+      refineToAll();
+    }
     render(); commit();
     tlSig = ""; paintTimeline();          /* the band shows upscale tails in this mode */
   };
@@ -7017,6 +7083,17 @@ function buildUI(node) {
   /* Show the film in Glide Video's own player, the way a render would, so the
      last thing on screen is the finished film and not the last clip - which
      looks just as finished and is not. */
+  /* The Assemble banner on Glide Video. The server streams the frame-by-frame
+     progress over the websocket; the start and the end are also sent from
+     here, so the banner shows even when a socket message is lost, or the
+     server side is older than the page. */
+  function glideBanner(msg) {
+    try {
+      const n = (app.graph?.nodes || []).find((x) => x.type === "CSGlideVideoCS");
+      n?._glideVideo?.assembling?.(msg);
+    } catch (e) { /* the banner is decoration: never break Assemble */ }
+  }
+
   function showInGlideVideo(entry) {
     try {
       const n = (app.graph?.nodes || []).find((x) => x.type === "CSGlideVideoCS");
@@ -7127,6 +7204,8 @@ function buildUI(node) {
       };
     });
     asmBusy = true;
+    glideBanner({ stage: "start", clips: clips.length, done: 0, total: 0, upscale: up,
+                  project: String(p.name || "").trim() || "film" });
     asmNote = { text: (opts.auto ? "Render done \u2014 " : "")
                       + `assembling ${clips.length} clip${clips.length === 1 ? "" : "s"}\u2026 `
                       + "(the console shows each clip)" };
@@ -7149,10 +7228,13 @@ function buildUI(node) {
                   title: (d.segments || []).map((g) => `${g.file}: ${g.keep} of ${g.of} frames`).join("\n") };
       console.log(`[H3 Studio] Assemble film \u2192 ${where} (${d.frames} frames)`);
       showInGlideVideo(d.ui);
+      glideBanner({ stage: "done", done: d.frames, total: d.frames, seconds: d.seconds,
+                    name: d.name, clips: (d.segments || []).length || clips.length, upscale: up });
     } catch (err) {
       asmNote = { text: "assemble failed \u2014 " + (err.message || err).split("\n")[0],
                   title: String(err.message || err), err: true };
       console.error("[H3 Studio] Assemble film:", err);
+      glideBanner({ stage: "error", error: String(err.message || err).split("\n")[0], upscale: up });
     } finally {
       asmBusy = false;
       if (shotsOpen) renderShots();
@@ -7191,6 +7273,21 @@ function buildUI(node) {
     for (;;) {
       if (run && run.cancel) throw new Error("cancelled");
       await sleep(1200);
+      /* For the panel: how many prompts are ahead of this one. Cheap, and
+         only every third poll. */
+      if (run && run.promptId === id && !run.started && polls % 3 === 0) {
+        try {
+          const q = await (await api.fetchApi("/queue")).json();
+          const running = q.queue_running || [], pending = q.queue_pending || [];
+          if (running.some((x) => x && x[1] === id)) {
+            run.started = true; run.ahead = 0;
+          } else {
+            const mine = pending.find((x) => x && x[1] === id);
+            if (mine) run.ahead = running.length + pending.filter((x) => x && x[0] < mine[0]).length;
+          }
+          paintRun();
+        } catch (e) { /* panel only: never let this stop the wait */ }
+      }
       let entry = null;
       try {
         const r = await api.fetchApi(`/history/${id}`);
@@ -7335,9 +7432,68 @@ function buildUI(node) {
   };
   api.addEventListener("execution_success", onPromptDone);
 
+  /* ---- live render info for the panel. Socket events only feed the
+     panel; the run itself still waits by polling (waitForPrompt), so a
+     dropped socket costs some detail on screen, never the run. */
+  let runTick = null;
+  let runPaintRaf = 0;
+  const paintRunSoon = () => {
+    if (runPaintRaf) return;
+    runPaintRaf = requestAnimationFrame(() => { runPaintRaf = 0; paintRun(); });
+  };
+  const runNodeTitle = (id) => {
+    if (id == null) return "";
+    const key = String(id);
+    try {
+      const n = app.graph?.getNodeById?.(key) || app.graph?.getNodeById?.(Number(key.split(":").pop()));
+      if (n) return n.title || n.type || "";
+    } catch (e) { /* fall through */ }
+    return "node " + key;
+  };
+  const onRunStart = (e) => {
+    const d = e.detail || {};
+    if (!run || !run.promptId || d.prompt_id !== run.promptId) return;
+    run.started = true; run.ahead = 0; paintRunSoon();
+  };
+  const onRunExecuting = (e) => {
+    const d = e.detail;
+    const pid = d && typeof d === "object" ? d.prompt_id : null;
+    const nid = d && typeof d === "object" ? d.node : d;
+    if (!run || !run.promptId || (pid && pid !== run.promptId)) return;
+    if (nid == null) return;
+    run.started = true; run.ahead = 0;
+    const name = runNodeTitle(nid);
+    if (name !== run.nodeName) { run.nodeName = name; run.step = null; }
+    paintRunSoon();
+  };
+  const onRunProgress = (e) => {
+    const d = e.detail || {};
+    if (!run || !run.promptId || (d.prompt_id && d.prompt_id !== run.promptId)) return;
+    run.started = true; run.ahead = 0;
+    if (d.node != null) {
+      const name = runNodeTitle(d.node);
+      if (name) run.nodeName = name;
+    }
+    run.step = { v: Number(d.value) || 0, max: Number(d.max) || 0 };
+    paintRunSoon();
+  };
+  api.addEventListener("execution_start", onRunStart);
+  api.addEventListener("executing", onRunExecuting);
+  api.addEventListener("progress", onRunProgress);
+
+  const fmtClock = (ms) => {
+    const t = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+    return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+             : `${m}:${String(sec).padStart(2, "0")}`;
+  };
+
+  const $q = (box) => (sel) => box.querySelector(sel);
+
   function paintRun() {
     if (!run) {
       if (runBox) { runBox.remove(); runBox = null; }
+      if (runTick) { clearInterval(runTick); runTick = null; }
       root.classList.remove("running");
       paintShotsBtn();
       return;
@@ -7345,9 +7501,28 @@ function buildUI(node) {
     if (!runBox) {
       runBox = el("div", "gcast-run");
       const card = el("div", "card");
-      card.append(el("div", "ttl", "Rendering the project"));
+      const head = el("div", "head");
+      head.append(el("div", "spin"), el("div", "ttl", "Rendering the project"), el("div", "tag"));
+      card.append(head);
       card.append(el("div", "msg"));
+      card.append(el("div", "pips"));
+      const track = el("div", "track");
+      track.append(el("div", "fill"));
+      card.append(track);
+      const row = el("div", "row");
+      row.append(el("span", "node"), el("span", "pct"));
+      card.append(row);
       card.append(el("div", "sub"));
+      const stats = el("div", "stats");
+      for (const [k, lab] of [["el", "elapsed"], ["clip", "this clip"], ["avg", "per clip"], ["eta", "left"]]) {
+        const c = el("div", "stat");
+        const b = el("b", null, "–");
+        b.dataset.k = k;
+        c.append(b, el("span", null, lab));
+        stats.append(c);
+      }
+      card.append(stats);
+      card.append(el("div", "last"));
       const cancel = el("button", "gcast-btn ghost stopbtn", "Stop");
       cancel.onclick = (e) => {
         e.stopPropagation();
@@ -7373,11 +7548,76 @@ function buildUI(node) {
       root.append(runBox);
       root.classList.add("running");
     }
+    if (!runTick) runTick = setInterval(() => { if (run) paintRun(); }, 1000);
+
     const p = proj();
+    const q = $q(runBox);
     const name = p.shots[run.i] ? shotLabel(p.shots[run.i], run.i) : `Clip ${run.i + 1}`;
-    runBox.querySelector(".msg").textContent =
-      run.cancel ? `Stopping after ${name}\u2026` : `${name} \u2014 ${run.k + 1} of ${run.total}`;
-    const stopBtn = runBox.querySelector(".stopbtn");
+    runBox.classList.toggle("stopping", !!run.cancel);
+
+    q(".ttl").textContent = run.cancel ? "Stopping after this clip" : "Rendering the project";
+    const tag = q(".tag");
+    tag.textContent = run.upscale ? "upscale" : "draft";
+    tag.classList.toggle("up", !!run.upscale);
+    q(".msg").textContent = `${name} — ${run.k + 1} of ${run.total}`;
+    q(".msg").title = name;
+
+    /* one pip per clip in the run: done, on the sampler now, still to go */
+    const pips = q(".pips");
+    const list = run.queue || [];
+    if (pips.childElementCount !== list.length) {
+      pips.textContent = "";
+      list.forEach(() => pips.append(el("div", "pip")));
+    }
+    list.forEach((ci, n) => {
+      const d = pips.children[n];
+      d.className = "pip" + (n < run.k ? " done" : n === run.k ? " cur" : "");
+      d.title = (p.shots[ci] ? shotLabel(p.shots[ci], ci) : `Clip ${ci + 1}`)
+              + (n < run.k ? " — done" : n === run.k ? " — now" : "");
+    });
+    pips.style.display = list.length > 1 ? "" : "none";
+
+    /* the bar: the live node's own steps when ComfyUI sends them, a sliding
+       bar while waiting for anything to start */
+    const st2 = run.step;
+    const track = q(".track");
+    const pctEl = q(".pct");
+    const nodeEl = q(".node");
+    if (st2 && st2.max > 0) {
+      const pc = Math.min(100, Math.floor((st2.v / st2.max) * 100));
+      track.classList.remove("wait");
+      q(".fill").style.width = pc + "%";
+      nodeEl.textContent = `${run.nodeName || "sampling"} · step ${st2.v} / ${st2.max}`;
+      pctEl.textContent = pc + "%";
+    } else {
+      track.classList.add("wait");
+      q(".fill").style.width = "0%";
+      pctEl.textContent = "";
+      if (run.started && run.nodeName) nodeEl.textContent = run.nodeName + "…";
+      else if (run.ahead > 0) nodeEl.textContent = `in ComfyUI's queue · ${run.ahead} ahead`;
+      else if (run.promptId) nodeEl.textContent = run.started ? "running…" : "queued…";
+      else nodeEl.textContent = "preparing the clip…";
+    }
+    nodeEl.title = nodeEl.textContent;
+
+    const now = Date.now();
+    const avg = run.durs.length ? run.durs.reduce((a, b) => a + b, 0) / run.durs.length : 0;
+    const clipEl = now - run.clipT0;
+    const left = run.total - run.k - 1;
+    const sv = (k, v) => { const b = runBox.querySelector(`.stat b[data-k="${k}"]`); if (b) b.textContent = v; };
+    sv("el", fmtClock(now - run.t0));
+    sv("clip", fmtClock(clipEl));
+    sv("avg", avg ? fmtClock(avg) : "–");
+    sv("eta", avg ? "~" + fmtClock(Math.max(0, avg - clipEl) + left * avg)
+                  : (run.total === 1 ? "–" : "after clip 1"));
+
+    const last = q(".last");
+    const lastName = run.made.length ? run.made[run.made.length - 1] : "";
+    last.textContent = "";
+    if (lastName) last.append("last: ", el("b", null, lastName));
+    last.style.display = lastName ? "" : "none";
+
+    const stopBtn = q(".stopbtn");
     if (stopBtn) {
       stopBtn.textContent = run.cancel ? "Stop now" : "Stop";
       stopBtn.title = run.cancel
@@ -7385,14 +7625,15 @@ function buildUI(node) {
           + "return to the panel. Clips already finished are kept."
         : "Finish the clip being rendered, then stop. Clips already done are kept.";
     }
-    runBox.querySelector(".sub").textContent =
+    q(".sub").textContent =
       run.note || (scopeText(run.scope)
                    + (run.links ? `, ${run.links} link${run.links === 1 ? "" : "s"}` : "")
                    + (run.look ? ", look carried across cuts" : "")
                    + (run.skipped ? `, ${run.skipped} skipped` : ""));
-    bShotsLbl.textContent = `Rendering ${run.k + 1}/${run.total}`;
+    bShotsLbl.textContent = st2 && st2.max > 0
+      ? `Rendering ${run.k + 1}/${run.total} · ${Math.floor((st2.v / st2.max) * 100)}%`
+      : `Rendering ${run.k + 1}/${run.total}`;
   }
-
   /* Which clips a scope covers, in project order. The chain is the linked
      run the clip belongs to: back while this clip continues from the one
      before it, forward while the next one continues from this. A clip on its
@@ -7634,7 +7875,11 @@ function buildUI(node) {
     run = { cancel: false, force: false, waiters: [], i: queue[state.k], k: state.k,
             total: queue.length, skipped: state.skipped || 0, scope: state.scope,
             look: state.look, links: state.links || 0,
-            note: resumed ? "picking the run back up\u2026" : "", made: (state.made || []).slice() };
+            note: resumed ? "picking the run back up\u2026" : "", made: (state.made || []).slice(),
+            /* for the panel only: queue, timings, live sampler progress */
+            queue: queue.slice(), upscale: !!state.upscale, t0: Date.now(), clipT0: Date.now(),
+            durs: [], promptId: state.promptId || null, step: null, nodeName: "",
+            started: false, ahead: null };
     paintRun();
     saveRun(state);
 
@@ -7652,7 +7897,9 @@ function buildUI(node) {
       for (let k = state.k; k < queue.length; k++) {
         if (!ownsRun(state.id)) { handedOver = true; break; }
         const i = queue[k];
-        run.i = i; run.k = k; paintRun();
+        run.i = i; run.k = k;
+        run.clipT0 = Date.now(); run.step = null; run.nodeName = ""; run.started = false; run.ahead = null;
+        paintRun();
         switchTo(i);
         const sh = p.shots[i];
         const pred = i > 0 ? p.shots[i - 1] : null;
@@ -7739,6 +7986,7 @@ function buildUI(node) {
           id = await raceCancel(queueOnce());
           state.promptId = id; saveRun(state);
         }
+        run.promptId = id;
 
         const entry = await raceCancel(waitForPrompt(id));
         /* Rebuilt while we waited: the new panel records this render. */
@@ -7755,6 +8003,8 @@ function buildUI(node) {
         storeRecord(proj(), sh, state.upscale ? "lastUp" : "lastOut", sh[state.upscale ? "lastUp" : "lastOut"]);
         refreshLatentsSoon();
         run.made.push(out.name);
+        run.durs.push(Date.now() - run.clipT0);
+        run.promptId = null; run.step = null; run.nodeName = "";
         state.made = run.made.slice();
         state.k = k + 1; state.promptId = null;
         commit();
@@ -9757,6 +10007,7 @@ function buildUI(node) {
      Drafts keep it per clip. */
   function refineToAll() {
     if (!upscaleOn()) return;
+    node.properties.gcast_up_refine = st.ref_refine_scale;   /* re-used when the tick goes back on */
     const p = proj();
     stash();
     for (const sh of p.shots) {
@@ -9976,6 +10227,12 @@ function buildUI(node) {
       ac.remove();
       rp.remove();
       try { api.removeEventListener("execution_success", onPromptDone); } catch (e) { /* older api */ }
+      try {
+        api.removeEventListener("execution_start", onRunStart);
+        api.removeEventListener("executing", onRunExecuting);
+        api.removeEventListener("progress", onRunProgress);
+      } catch (e) { /* older api */ }
+      if (runTick) { clearInterval(runTick); runTick = null; }
       /* a window listener per node instance would outlive the node */
       window.removeEventListener("paste", onPaste, true);
       window.removeEventListener("wheel", onPromptWheel, true);

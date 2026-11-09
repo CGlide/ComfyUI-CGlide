@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 /*
  * csglide_video.js -- preview widget for the Glide Video node.
@@ -11,6 +12,11 @@ import { app } from "../../scripts/app.js";
  * Frame step and the frame counter use the fps and frame count the Python
  * side puts in the payload, so they are exact rather than inferred from
  * the video's own timebase.
+ *
+ * While H3 Studio assembles a film, the server streams "cglide.assemble"
+ * progress over the websocket and this node shows it as a banner over the
+ * player: which clip, frames done, a bar. Green when the film is ready, red
+ * (click to close) when it failed.
  */
 
 const CSS = `
@@ -68,6 +74,94 @@ const CSS = `
   border-radius: 3px; padding: 5px 7px; margin: 0 2px;
 }
 .glide-video-detail b { color: #ccc; font-weight: 600; }
+
+/* ---- Assemble banner (no backdrop-filter: it tiled into a mosaic when
+   zooming in Chrome after an NVIDIA driver update) ---- */
+.glide-video-stage { position: relative; }
+.glide-video-stage.asm-on { min-height: 132px; }
+.glide-asm {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  padding: 10px; box-sizing: border-box; border-radius: 4px;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.78) 100%);
+  opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+}
+.glide-asm.show { opacity: 1; pointer-events: auto; }
+.glide-asm-card {
+  width: min(92%, 360px); box-sizing: border-box;
+  padding: 11px 14px 12px; border-radius: 10px;
+  background: linear-gradient(180deg, #232323 0%, #161616 100%);
+  border: 1px solid rgba(255,154,46,0.35);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.75), 0 4px 10px rgba(0,0,0,0.5),
+              0 0 26px rgba(255,140,0,0.22), inset 0 1px 0 rgba(255,255,255,0.06);
+  transform: translateY(6px) scale(0.97);
+  transition: transform 0.3s cubic-bezier(.2,.9,.3,1.2), border-color 0.3s, box-shadow 0.3s;
+}
+.glide-asm.show .glide-asm-card { transform: translateY(0) scale(1); }
+.glide-asm-head { display: flex; align-items: center; gap: 8px; }
+.glide-asm-spin {
+  width: 12px; height: 12px; flex: 0 0 auto; border-radius: 50%;
+  border: 2px solid rgba(255,154,46,0.25); border-top-color: #ff9a2e;
+  animation: glide-asm-spin 0.8s linear infinite;
+}
+@keyframes glide-asm-spin { to { transform: rotate(360deg); } }
+.glide-asm-title {
+  color: #ff9a2e; font-size: 13px; font-weight: 700; letter-spacing: 0.3px;
+  text-shadow: 0 0 12px rgba(255,140,0,0.45);
+}
+.glide-asm-tag {
+  margin-left: auto; color: #ff9a2e; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.8px; text-transform: uppercase;
+  border: 1px solid rgba(255,154,46,0.45); border-radius: 999px; padding: 1px 7px;
+}
+.glide-asm-sub {
+  color: #bdbdbd; font-size: 11px; margin: 6px 0 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.glide-asm-track {
+  position: relative; height: 7px; border-radius: 999px; overflow: hidden;
+  background: #2b2b2b; box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
+}
+.glide-asm-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+  border-radius: 999px; overflow: hidden;
+  background: linear-gradient(90deg, #ff6a00 0%, #ff9a2e 60%, #ffc06b 100%);
+  box-shadow: 0 0 10px rgba(255,140,0,0.6);
+  transition: width 0.18s linear;
+}
+.glide-asm-fill::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
+  animation: glide-asm-sheen 1.3s ease-in-out infinite;
+}
+@keyframes glide-asm-sheen { to { left: 110%; } }
+.glide-asm-track.wait .glide-asm-fill { width: 30% !important; animation: glide-asm-wait 1.1s ease-in-out infinite alternate; }
+@keyframes glide-asm-wait { from { margin-left: 0%; } to { margin-left: 70%; } }
+.glide-asm-stats {
+  display: flex; justify-content: space-between; margin-top: 6px;
+  color: #8c8c8c; font-size: 10px; font-variant-numeric: tabular-nums;
+}
+.glide-asm-pct { color: #ffb35c; font-weight: 700; }
+.glide-asm.ok .glide-asm-card {
+  border-color: rgba(79,255,143,0.45);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.75), 0 0 26px rgba(79,255,143,0.22);
+}
+.glide-asm.ok .glide-asm-title { color: #4fff8f; text-shadow: 0 0 12px rgba(79,255,143,0.45); }
+.glide-asm.ok .glide-asm-fill { background: linear-gradient(90deg, #22c55e, #4fff8f); box-shadow: 0 0 10px rgba(79,255,143,0.6); }
+.glide-asm.ok .glide-asm-fill::after, .glide-asm.bad .glide-asm-fill::after { display: none; }
+.glide-asm.ok .glide-asm-tag, .glide-asm.ok .glide-asm-pct { color: #4fff8f; border-color: rgba(79,255,143,0.45); }
+.glide-asm.bad { cursor: pointer; }
+.glide-asm.bad .glide-asm-card {
+  border-color: rgba(255,80,80,0.5);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.75), 0 0 26px rgba(255,60,60,0.25);
+}
+.glide-asm.bad .glide-asm-title { color: #ff5a5a; text-shadow: 0 0 12px rgba(255,60,60,0.45); }
+.glide-asm.bad .glide-asm-fill { background: #ff5a5a; box-shadow: none; }
+.glide-asm.bad .glide-asm-tag, .glide-asm.bad .glide-asm-pct { color: #ff5a5a; border-color: rgba(255,80,80,0.5); }
+.glide-asm.bad .glide-asm-sub { white-space: normal; color: #e0a0a0; }
+.glide-asm-icon { font-size: 13px; font-weight: 700; line-height: 1; }
+.glide-asm.ok .glide-asm-icon { color: #4fff8f; }
+.glide-asm.bad .glide-asm-icon { color: #ff5a5a; }
 `;
 
 /* Detail shown under the preset dropdown. Kept here rather than pulled
@@ -153,17 +247,24 @@ function build(node) {
   const wrap = document.createElement("div");
   wrap.className = "glide-video-wrap";
 
+  /* The stage holds the player and the Assemble banner laid over it. */
+  const stage = document.createElement("div");
+  stage.className = "glide-video-stage";
+  wrap.appendChild(stage);
+
   const empty = document.createElement("div");
   empty.className = "glide-video-empty";
   empty.textContent = "no clip yet";
-  wrap.appendChild(empty);
+  stage.appendChild(empty);
 
   const video = document.createElement("video");
   video.muted = false;   // paintSound() owns this from here on
   video.playsInline = true;
   video.preload = "auto";
   video.style.display = "none";
-  wrap.appendChild(video);
+  stage.appendChild(video);
+
+  const asm = buildAssembleBanner(stage);
 
   const bar = document.createElement("div");
   bar.className = "glide-video-bar";
@@ -383,7 +484,179 @@ function build(node) {
 
   paintLoop();
   paintSound();
-  return { wrap, show, setDetail };
+  return { wrap, show, setDetail, assembling: asm.update };
+}
+
+/* ---- Assemble banner --------------------------------------------------- */
+
+function buildAssembleBanner(stage) {
+  const box = document.createElement("div");
+  box.className = "glide-asm";
+  const card = document.createElement("div");
+  card.className = "glide-asm-card";
+  box.appendChild(card);
+
+  const head = document.createElement("div");
+  head.className = "glide-asm-head";
+  const spin = document.createElement("div");
+  spin.className = "glide-asm-spin";
+  const icon = document.createElement("span");
+  icon.className = "glide-asm-icon";
+  icon.style.display = "none";
+  const title = document.createElement("span");
+  title.className = "glide-asm-title";
+  title.textContent = "Assembling film";
+  const tag = document.createElement("span");
+  tag.className = "glide-asm-tag";
+  head.append(spin, icon, title, tag);
+
+  const sub = document.createElement("div");
+  sub.className = "glide-asm-sub";
+
+  const track = document.createElement("div");
+  track.className = "glide-asm-track";
+  const fill = document.createElement("div");
+  fill.className = "glide-asm-fill";
+  track.appendChild(fill);
+
+  const stats = document.createElement("div");
+  stats.className = "glide-asm-stats";
+  const frames = document.createElement("span");
+  const pct = document.createElement("span");
+  pct.className = "glide-asm-pct";
+  stats.append(frames, pct);
+
+  card.append(head, sub, track, stats);
+  stage.appendChild(box);
+
+  let job = null;
+  let hideTimer = null;
+
+  function open() {
+    clearTimeout(hideTimer);
+    stage.classList.add("asm-on");
+    box.classList.add("show");
+  }
+  function close() {
+    clearTimeout(hideTimer);
+    box.classList.remove("show");
+    hideTimer = setTimeout(() => {
+      stage.classList.remove("asm-on");
+      box.classList.remove("ok", "bad");
+    }, 260);
+    job = null;
+  }
+  box.addEventListener("click", (e) => {
+    if (box.classList.contains("bad")) { e.stopPropagation(); close(); }
+  });
+
+  function secs(t) {
+    t = Number(t) || 0;
+    if (t < 60) return t.toFixed(1) + "s";
+    const m = Math.floor(t / 60);
+    return m + ":" + (t - m * 60).toFixed(1).padStart(4, "0");
+  }
+
+  function mode(m, running) {
+    box.classList.toggle("ok", m === "ok");
+    box.classList.toggle("bad", m === "bad");
+    spin.style.display = running ? "" : "none";
+    icon.style.display = running ? "none" : "";
+    icon.textContent = m === "ok" ? "\u2713" : m === "bad" ? "\u2715" : "";
+  }
+
+  function update(d) {
+    if (!d || !d.stage) return;
+    /* a message from an older run that is still draining - ignore it */
+    if (job && d.id && d.id !== job && d.stage !== "start") return;
+    if (d.stage === "start") job = d.id || null;
+
+    const total = Number(d.total) || 0;
+    const done = Math.min(Number(d.done) || 0, total || Infinity);
+    const n = Number(d.clips) || 0;
+    tag.textContent = d.upscale ? "upscale" : "draft";
+    title.title = d.project ? "Project: " + d.project : "";
+
+    if (d.stage === "error") {
+      open();
+      mode("bad", false);
+      title.textContent = "Assemble failed";
+      sub.textContent = d.error || "see the console";
+      sub.title = d.error || "";
+      track.classList.remove("wait");
+      fill.style.width = "100%";
+      frames.textContent = "click to close";
+      pct.textContent = "";
+      job = null;
+      return;
+    }
+
+    open();
+    sub.title = "";
+
+    if (d.stage === "done") {
+      mode("ok", false);
+      title.textContent = "Film ready";
+      sub.textContent = (d.name || "film") + "  \u00B7  " + n + " clip" + (n === 1 ? "" : "s");
+      track.classList.remove("wait");
+      fill.style.width = "100%";
+      frames.textContent = done + " frames  \u00B7  " + secs(d.seconds);
+      pct.textContent = "100%";
+      job = null;
+      hideTimer = setTimeout(close, 3500);
+      return;
+    }
+
+    mode("run", true);
+    title.textContent = "Assembling film";
+    const waiting = d.stage === "start" || d.stage === "sound" || !total;
+    track.classList.toggle("wait", waiting);
+    if (d.stage === "start") {
+      sub.textContent = "checking " + n + " clip" + (n === 1 ? "" : "s") + "\u2026";
+      frames.textContent = "";
+      pct.textContent = "";
+      fill.style.width = "0%";
+    } else if (d.stage === "sound") {
+      sub.textContent = "cutting the sound\u2026";
+      frames.textContent = "0 / " + total + " frames";
+      pct.textContent = "";
+      fill.style.width = "0%";
+    } else if (d.stage === "finishing") {
+      sub.textContent = "finishing the file\u2026";
+      fill.style.width = "100%";
+      frames.textContent = total + " / " + total + " frames";
+      pct.textContent = "100%";
+    } else {
+      const p = total ? Math.floor((done / total) * 100) : 0;
+      sub.textContent = "clip " + (d.clip || 1) + " / " + n
+        + (d.label ? "  \u00B7  " + d.label : "");
+      fill.style.width = p + "%";
+      frames.textContent = done + " / " + total + " frames";
+      pct.textContent = p + "%";
+    }
+  }
+
+  return { update };
+}
+
+/* The film goes to the first Glide Video in the graph (H3 Studio's
+   showInGlideVideo picks it the same way), so the banner shows there too. */
+function filmTarget() {
+  const nodes = app.graph?.nodes || app.graph?._nodes || [];
+  return nodes.find((n) => n.type === "CSGlideVideoCS" && n._glideVideo) || null;
+}
+
+let listening = false;
+function listenForAssemble() {
+  if (listening) return;
+  listening = true;
+  api.addEventListener("cglide.assemble", (e) => {
+    try {
+      filmTarget()?._glideVideo?.assembling(e.detail);
+    } catch (err) {
+      console.warn("[Glide Video] assemble banner:", err);
+    }
+  });
 }
 
 /* save_latent widget: hidden while H3 Studio drives it through save_latent_in,
@@ -423,8 +696,13 @@ function syncSaveLatent(node) {
 app.registerExtension({
   name: "CGlide.GlideVideo",
 
+  setup() {
+    listenForAssemble();
+  },
+
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== "CSGlideVideoCS") return;
+    listenForAssemble();
 
     const onCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {

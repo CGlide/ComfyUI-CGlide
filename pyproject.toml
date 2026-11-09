@@ -1,7 +1,7 @@
 [project]
 name = "cglide"
 description = "H3 Studio and friends — MiniMax H3 prompt building, animated sampling preview, video encoding, clip joining and DLSS 5 preview"
-version = "1.4.9"
+version = "1.5.0"
 license = { file = "LICENSE" }
 
 [project.urls]
@@ -9,4 +9,4 @@ Repository = "https://github.com/CGlide/ComfyUI-CGlide"
 
 [tool.comfy]
 PublisherId = "cglide"
-DisplayName = "CGlide"
+DisplayName = "CGlide"

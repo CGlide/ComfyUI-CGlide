@@ -31,6 +31,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 
 import numpy as np
 
@@ -248,15 +249,19 @@ def build_audio(segs, fps):
 # picture
 # ---------------------------------------------------------------------
 
-def frames_of(segs, deep):
+def frames_of(segs, deep, progress=None):
     """Every kept frame, in order, as the raw bytes ffmpeg's pipe wants -
     one frame in memory at a time.
+
+    progress(clip_index, frames_done) is called as frames go out, so the
+    browser can draw a bar. It is throttled by the caller, not here.
 
     Always decoded at 16 bits, like Glide Join does. For an 8-bit preset the
     step down is Glide Video's own (x / 65535 * 255, rounded), so an 8-bit
     film comes out with the same integers output = film would have given."""
     fmt = "rgb48le"
-    for s in segs:
+    done = 0
+    for k, s in enumerate(segs):
         left = s["keep"]
         if left <= 0:
             continue
@@ -275,12 +280,15 @@ def frames_of(segs, deep):
                     a = np.clip(f * 255.0 + 0.5, 0, 255).astype(np.uint8)
                 yield np.ascontiguousarray(a).tobytes()
                 left -= 1
+                done += 1
+                if progress is not None:
+                    progress(k, done)
         if left > 0:
             raise ValueError("Assemble: %s decoded %d frames short of the %d counted"
                              % (s["label"], left, s["keep"]))
 
 
-def _encode(cmd, chunks):
+def _encode(cmd, chunks, on_flush=None):
     proc = _run.popen(cmd[0], cmd[1:])
     lines = collections.deque(maxlen=STDERR_LINES)
     pump = threading.Thread(target=_drain, args=(proc.stderr, lines), daemon=True)
@@ -293,6 +301,8 @@ def _encode(cmd, chunks):
             except (BrokenPipeError, OSError):
                 break
             written += 1
+        if on_flush is not None:
+            on_flush()
         try:
             proc.stdin.close()
         except (BrokenPipeError, OSError):
@@ -310,15 +320,52 @@ def _encode(cmd, chunks):
 # the whole thing
 # ---------------------------------------------------------------------
 
+class _Ticker:
+    """Throttled progress for the Glide Video banner: at most one message
+    every 0.15 s, plus one whenever the clip changes, so a long film does not
+    flood the websocket with a message per frame."""
+
+    def __init__(self, report, segs, total):
+        self.report = report
+        self.segs = segs
+        self.total = total
+        self.last = 0.0
+        self.clip = -1
+
+    def stage(self, stage, **extra):
+        if self.report is None:
+            return
+        try:
+            self.report(dict({"stage": stage, "total": self.total,
+                              "clips": len(self.segs)}, **extra))
+        except Exception:
+            pass
+
+    def __call__(self, k, done):
+        if self.report is None:
+            return
+        now = time.monotonic()
+        if k == self.clip and now - self.last < 0.15 and done < self.total:
+            return
+        self.clip = k
+        self.last = now
+        self.stage("frames", done=done, clip=k + 1, label=self.segs[k]["label"])
+
+
 def assemble(clips, preset, container="auto", fps=24.0, prefix="film/film",
-             out_dir=None, log=print):
+             out_dir=None, log=print, report=None):
     """Plan, cut the sound, stream the pictures through one encode.
-    Returns {"path", "name", "subfolder", "frames", "seconds", "segments"}."""
+    Returns {"path", "name", "subfolder", "frames", "seconds", "segments"}.
+
+    report(dict), when given, receives progress for the Glide Video banner:
+    stage "sound", then "frames" (done / total, clip n of clips, label), then
+    "finishing" while ffmpeg closes the file."""
     if av is None:
         raise RuntimeError("Assemble: PyAV is required.")
     segs = plan(clips, log)
     fps = float(fps or segs[0]["fps"] or 24.0)
     total = sum(s["keep"] for s in segs)
+    tick = _Ticker(report, segs, total)
     for s in segs:
         log("[Assemble] %-24s keeps %4d of %4d frames"
             % (s["label"], s["keep"], s["frames"]))
@@ -341,6 +388,7 @@ def assemble(clips, preset, container="auto", fps=24.0, prefix="film/film",
     tmp = tempfile.mkdtemp(prefix="cglide_assemble_")
     pcm = meta = None
     try:
+        tick.stage("sound", done=0)
         wave, rate = build_audio(segs, fps)
         channels = 2
         if wave is not None:
@@ -361,7 +409,9 @@ def assemble(clips, preset, container="auto", fps=24.0, prefix="film/film",
                                audio_rate=rate, audio_channels=channels,
                                preview_path=preview_path, meta_path=meta, container=ext)
         deep = pipe_format(preset) == "rgb48le"
-        code, err, written = _encode(cmd, frames_of(segs, deep))
+        tick.stage("frames", done=0, clip=1, label=segs[0]["label"])
+        code, err, written = _encode(cmd, frames_of(segs, deep, tick),
+                                     on_flush=lambda: tick.stage("finishing", done=total))
         if code != 0:
             raise RuntimeError("Assemble: ffmpeg failed (exit %s) after %d of %d frames\n%s"
                                % (code, written, total, err.strip()))
