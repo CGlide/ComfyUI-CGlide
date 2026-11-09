@@ -653,6 +653,8 @@ const CSS = `
 .gcast-tkpv .del:hover { background:#70262c; }
 .gcast-tkpv .del.armed { color:#fff; background:#a63a42; border-color:#d16168; }
 .gcast-tkpv .del:disabled { opacity:.55; cursor:default; }
+/* both actions hang to the right, sized to their label (declare last: it wins) */
+.gcast-tkpv .pick, .gcast-tkpv .del { width:fit-content; margin-left:auto; }
 .gcast-cpal .tk .dot { width:7px; height:7px; border-radius:50%; flex:none;
   box-shadow:inset 0 0 0 1px var(--h3-line); }
 .gcast-cpal .tk button.on .dot { background:#FF9CF9; box-shadow:none; }
@@ -6946,6 +6948,54 @@ function buildUI(node) {
     panel.style.top = Math.max(8, top) + "px";
   }
 
+  function takeDeleteButton(t, canDelete, onFailCap, onDeleted) {
+    if (!canDelete) return null;
+    const delBtn = el("button", "del", "Delete this take");
+    delBtn.type = "button";
+    delBtn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    delBtn.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (!delBtn.dataset.armed) {
+        delBtn.dataset.armed = "1";
+        delBtn.textContent = "Really delete — click again";
+        delBtn.classList.add("armed");
+        clearTimeout(delBtn._disarm);
+        delBtn._disarm = setTimeout(() => {
+          if (!delBtn.isConnected) return;
+          delete delBtn.dataset.armed;
+          delBtn.classList.remove("armed");
+          delBtn.textContent = "Delete this take";
+        }, 4000);
+        return;
+      }
+      delBtn.disabled = true;
+      delBtn.textContent = "Deleting…";
+      void api.fetchApi("/cglide/delete_take", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ take: { name: t.name, subfolder: t.subfolder || "",
+                                        type: t.type === "temp" ? "temp" : "output" } }),
+      }).then(async (r) => {
+        if (r.ok) {
+          console.log(`[H3 Studio] take deleted: ${t.name}`);
+          hideTakePreview();
+          onDeleted();
+        } else {
+          const err = await r.json().catch(() => ({}));
+          onFailCap(`delete failed — ${err.error || r.status}`);
+          delete delBtn.dataset.armed;
+          delBtn.classList.remove("armed");
+          delBtn.disabled = false;
+          delBtn.textContent = "Delete this take";
+        }
+      }).catch((e) => {
+        onFailCap(`delete failed — ${e.message || e}`);
+        delBtn.disabled = false;
+        delBtn.textContent = "Delete this take";
+      });
+    });
+    return delBtn;
+  }
+
   function buildTakePreview(row, t, onPick, onRefresh, canDelete) {
     if (!cpMenu) return;
     const id = t.name + "@" + (t.subfolder || "");
@@ -6957,9 +7007,12 @@ function buildUI(node) {
     tkpEl.addEventListener("pointerleave", () => { clearTimeout(tkpHideTimer); tkpHideTimer = setTimeout(hideTakePreview, 160); });
     tkpEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
     const ext = t.name.toLowerCase();
+    const failCap = () => [...tkpEl.querySelectorAll(".cap")].pop();
     if (TKP_UNPLAYABLE_EXT.some((e) => ext.endsWith(e))) {
       tkpEl.append(el("div", "cap", `${t.name} — .${ext.split(".").pop()} can't play in the browser`));
       tkpEl.append(el("div", "cap", "open it in the outputs folder instead"));
+      const del = takeDeleteButton(t, canDelete, (msg) => { failCap().textContent = msg; }, onRefresh);
+      if (del) tkpEl.append(del);
       document.body.append(tkpEl);
       placeTakePreviewPanel(row, tkpEl);
       return;
@@ -6987,53 +7040,8 @@ function buildUI(node) {
       cap.textContent = `${t.name} — couldn't preview in this browser`;
       if (tkpEl) placeTakePreviewPanel(row, tkpEl);
     });
-    let delBtn = null;
-    if (canDelete) {
-      delBtn = el("button", "del", "Delete this take");
-      delBtn.type = "button";
-      delBtn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
-      delBtn.addEventListener("click", (ev) => {
-        ev.preventDefault(); ev.stopPropagation();
-        if (!delBtn.dataset.armed) {
-          delBtn.dataset.armed = "1";
-          delBtn.textContent = "Really delete — click again";
-          delBtn.classList.add("armed");
-          clearTimeout(delBtn._disarm);
-          delBtn._disarm = setTimeout(() => {
-            if (!delBtn.isConnected) return;
-            delete delBtn.dataset.armed;
-            delBtn.classList.remove("armed");
-            delBtn.textContent = "Delete this take";
-          }, 4000);
-          return;
-        }
-        delBtn.disabled = true;
-        delBtn.textContent = "Deleting…";
-        void api.fetchApi("/cglide/delete_take", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ take: { name: t.name, subfolder: t.subfolder || "",
-                                          type: t.type === "temp" ? "temp" : "output" } }),
-        }).then(async (r) => {
-          if (r.ok) {
-            console.log(`[H3 Studio] take deleted: ${t.name}`);
-            hideTakePreview();
-            onRefresh();
-          } else {
-            const err = await r.json().catch(() => ({}));
-            cap.textContent = `delete failed — ${err.error || r.status}`;
-            delete delBtn.dataset.armed;
-            delBtn.classList.remove("armed");
-            delBtn.disabled = false;
-            delBtn.textContent = "Delete this take";
-          }
-        }).catch((e) => {
-          cap.textContent = `delete failed — ${e.message || e}`;
-          delBtn.disabled = false;
-          delBtn.textContent = "Delete this take";
-        });
-      });
-      tkpEl.append(delBtn);
-    }
+    const del = takeDeleteButton(t, canDelete, (msg) => { failCap().textContent = msg; }, onRefresh);
+    if (del) tkpEl.append(del);
     document.body.append(tkpEl);
     placeTakePreviewPanel(row, tkpEl);
   }
