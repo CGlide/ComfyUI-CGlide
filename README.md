@@ -11,7 +11,7 @@ continued from, and one to lock real audio into the latent.
 I make short films with these. Everything here exists because I needed it, and
 the defaults are what I actually use.
 <p align="center">
-<a href="https://youtu.be/aEUM6sihSdI">
+<a href="https://youtu.be/2fZoeFgRtqk">
 <img width="633" height="950" alt="Capture d&#39;écran 2026-11-09 213343" src="https://github.com/user-attachments/assets/95fa902e-fdc8-4c0a-8266-41c99a9d124c" />
 
 
