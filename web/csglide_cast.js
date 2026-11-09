@@ -647,6 +647,12 @@ const CSS = `
   padding:4px 8px; border-radius:6px; font-size:10.5px; text-align:center;
   color:#091d21; background:var(--h3-accent); cursor:pointer; }
 .gcast-tkpv .pick:hover { filter:brightness(1.15); }
+.gcast-tkpv .del { all:unset; pointer-events:auto; display:block; margin:4px 2px 2px;
+  padding:4px 8px; border-radius:6px; font-size:10.5px; text-align:center;
+  color:#ffd0d0; background:#5a2126; border:1px solid #7a2e34; cursor:pointer; }
+.gcast-tkpv .del:hover { background:#70262c; }
+.gcast-tkpv .del.armed { color:#fff; background:#a63a42; border-color:#d16168; }
+.gcast-tkpv .del:disabled { opacity:.55; cursor:default; }
 .gcast-cpal .tk .dot { width:7px; height:7px; border-radius:50%; flex:none;
   box-shadow:inset 0 0 0 1px var(--h3-line); }
 .gcast-cpal .tk button.on .dot { background:#FF9CF9; box-shadow:none; }
@@ -6940,7 +6946,7 @@ function buildUI(node) {
     panel.style.top = Math.max(8, top) + "px";
   }
 
-  function buildTakePreview(row, t, onPick) {
+  function buildTakePreview(row, t, onPick, onRefresh, canDelete) {
     if (!cpMenu) return;
     const id = t.name + "@" + (t.subfolder || "");
     hideTakePreview();
@@ -6981,17 +6987,64 @@ function buildUI(node) {
       cap.textContent = `${t.name} — couldn't preview in this browser`;
       if (tkpEl) placeTakePreviewPanel(row, tkpEl);
     });
+    let delBtn = null;
+    if (canDelete) {
+      delBtn = el("button", "del", "Delete this take");
+      delBtn.type = "button";
+      delBtn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      delBtn.addEventListener("click", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        if (!delBtn.dataset.armed) {
+          delBtn.dataset.armed = "1";
+          delBtn.textContent = "Really delete — click again";
+          delBtn.classList.add("armed");
+          clearTimeout(delBtn._disarm);
+          delBtn._disarm = setTimeout(() => {
+            if (!delBtn.isConnected) return;
+            delete delBtn.dataset.armed;
+            delBtn.classList.remove("armed");
+            delBtn.textContent = "Delete this take";
+          }, 4000);
+          return;
+        }
+        delBtn.disabled = true;
+        delBtn.textContent = "Deleting…";
+        void api.fetchApi("/cglide/delete_take", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ take: { name: t.name, subfolder: t.subfolder || "",
+                                          type: t.type === "temp" ? "temp" : "output" } }),
+        }).then(async (r) => {
+          if (r.ok) {
+            console.log(`[H3 Studio] take deleted: ${t.name}`);
+            hideTakePreview();
+            onRefresh();
+          } else {
+            const err = await r.json().catch(() => ({}));
+            cap.textContent = `delete failed — ${err.error || r.status}`;
+            delete delBtn.dataset.armed;
+            delBtn.classList.remove("armed");
+            delBtn.disabled = false;
+            delBtn.textContent = "Delete this take";
+          }
+        }).catch((e) => {
+          cap.textContent = `delete failed — ${e.message || e}`;
+          delBtn.disabled = false;
+          delBtn.textContent = "Delete this take";
+        });
+      });
+      tkpEl.append(delBtn);
+    }
     document.body.append(tkpEl);
     placeTakePreviewPanel(row, tkpEl);
   }
 
-  function queueTakePreview(row, t, onPick) {
+  function queueTakePreview(row, t, onPick, onRefresh, canDelete) {
     if (!cpMenu || !cpMenu.contains(row)) return;
     clearTimeout(tkpLoadTimer); tkpLoadTimer = 0;
     clearTimeout(tkpHideTimer); tkpHideTimer = 0;
     const id = t.name + "@" + (t.subfolder || "");
     if (tkpFor === id && tkpEl) return;    // already on screen: keep it
-    tkpLoadTimer = setTimeout(() => buildTakePreview(row, t, onPick), 180);
+    tkpLoadTimer = setTimeout(() => buildTakePreview(row, t, onPick, onRefresh, canDelete), 180);
   }
 
   async function loadTakes(i, box, menu, x, y) {
@@ -7059,7 +7112,9 @@ function buildUI(node) {
       if (t.upscale) b.classList.add("upk");
       b.addEventListener("pointerdown", (ev) => ev.stopPropagation());
       b.addEventListener("pointerenter", () => queueTakePreview(b, t,
-        () => { if (t.upscale) pickUpTake(i, t); else pickTake(i, t, k === 0); }));
+        () => { if (t.upscale) pickUpTake(i, t); else pickTake(i, t, k === 0); },
+        () => { if (cpMenu === menu) void loadTakes(i, box, menu, x, y); },
+        !on));
       b.addEventListener("pointerleave", () => {
         clearTimeout(tkpLoadTimer); tkpLoadTimer = 0;
         clearTimeout(tkpHideTimer); tkpHideTimer = setTimeout(hideTakePreview, 160);
