@@ -639,7 +639,7 @@ const CSS = `
 }
 .gcast-tkpv[data-mode="fl2va"] { --h3-accent:#59c14f; }
 .gcast-tkpv video, .gcast-tkpv img { display:block; width:auto; max-width:min(480px,46vw);
-  max-height:52vh; border-radius:6px; background:#06222e; cursor:pointer; }
+  max-height:52vh; border-radius:6px; background:#06222e; }
 .gcast-tkpv .cap { max-width:min(480px,46vw); font-size:10px; color:var(--h3-dim);
   padding:5px 2px 0; font-family:ui-monospace,Consolas,monospace;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -7029,8 +7029,10 @@ function buildUI(node) {
     const v = document.createElement(isVideo ? "video" : "img");
     v.src = takePreviewURL(t);
     if (isVideo) {
+      /* native controls: seek, pause and crucially UNMUTE — the hover preview
+         starts muted and only plays sound when the user turns it up. */
       v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true;
-      v.addEventListener("click", () => { if (v.paused) void v.play(); else v.pause(); });
+      v.controls = true;
     }
     const cap = el("div", "cap",
       `${t.name}${t.subfolder ? " · " + t.subfolder : ""}${t.w ? ` · ${t.w}\u00d7${t.h}` : ""} · ${takeWhen(t.mtime)}`);
