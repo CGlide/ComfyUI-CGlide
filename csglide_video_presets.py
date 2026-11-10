@@ -583,25 +583,45 @@ def write_ffmetadata(path, fields):
 QUALITY_FLAGS = ("-crf", "-cq", "-qp")
 
 
-def with_quality(args, crf):
-    """args with the preset's crf / cq / qp replaced by crf. 0 or None keeps
-    the preset's own value. Presets with no quality number are unchanged."""
+QUALITY_LEVELS = ["max", "high", "medium", "small"]
+
+# How far each level moves the preset's own crf / cq / qp. "high" is the
+# preset as tuned. x264 and x265 share a scale (+6 is about half the size);
+# AV1's scale is wider, so its steps are bigger to land at a similar look.
+_QUALITY_STEPS = {"default": (-3, 0, 4, 8), "av1": (-4, 0, 5, 10)}
+
+
+def quality_value(encoder, base, level):
+    """The crf / cq / qp a quality level gives for one encoder, starting from
+    the preset's own value (which is "high")."""
+    steps = _QUALITY_STEPS["av1" if "av1" in str(encoder) else "default"]
     try:
-        crf = int(crf or 0)
-    except (TypeError, ValueError):
-        crf = 0
-    if crf <= 0:
+        k = QUALITY_LEVELS.index(str(level))
+    except ValueError:
+        k = 1
+    return max(0, min(63, int(base) + steps[k]))
+
+
+def with_quality(args, encoder, level):
+    """args with the preset's crf / cq / qp moved to the quality level.
+    "high" (or anything unknown) keeps the preset as it is. Presets with no
+    quality number (ProRes, FFV1) are unchanged."""
+    if str(level) not in QUALITY_LEVELS or str(level) == "high":
         return args
     out = list(args)
     for i, a in enumerate(out[:-1]):
         if a in QUALITY_FLAGS:
-            out[i + 1] = str(crf)
+            try:
+                out[i + 1] = str(quality_value(encoder, out[i + 1], level))
+            except ValueError:
+                pass
     return out
 
 
 def build_ffmpeg_cmd(preset, width, height, fps, out_path,
                      audio_path=None, audio_rate=None, audio_channels=2,
-                     preview_path=None, meta_path=None, container=None, crf=0):
+                     preview_path=None, meta_path=None, container=None,
+                     quality="high"):
     """Build a single-pass ffmpeg command.
 
     Frames are written to stdin as raw rgb24, or rgb48le for the
@@ -609,8 +629,9 @@ def build_ffmpeg_cmd(preset, width, height, fps, out_path,
     second input. One process, one master file -- nothing to clean up
     afterwards.
 
-    crf, when above 0, replaces the preset's own crf / cq / qp (see
-    with_quality); ProRes and FFV1 have none and ignore it.
+    quality is one of QUALITY_LEVELS; it moves the preset's own crf / cq /
+    qp by a step that suits the encoder (see with_quality). ProRes and FFV1
+    have no quality number and ignore it.
 
     If preview_path is given, a second small H.264 output is muxed in
     the same pass. Use it for ProRes/FFV1 masters, which browsers can't
@@ -648,7 +669,7 @@ def build_ffmpeg_cmd(preset, width, height, fps, out_path,
         cmd += ["-map", "1:a:0"] + AUDIO_ARGS + ["-shortest"]
     if meta_idx is not None:
         cmd += ["-map_metadata", str(meta_idx)]
-    args = with_quality(p["args"], crf)
+    args = with_quality(p["args"], p["encoder"], quality)
 
     # The hvc1 tag is an ISOBMFF thing. Matroska has no tag table for it
     # and ffmpeg refuses the mux outright ("could not find tag for codec

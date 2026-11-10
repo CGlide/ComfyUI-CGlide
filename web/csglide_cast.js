@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-10b - Assemble uses Glide Video crf; no 4:2:0 warning with latent hold";
+const H3_STUDIO_UI_BUILD = "2026-11-10c - Assemble uses the Glide Video quality level";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -7418,7 +7418,7 @@ function buildUI(node) {
         body: JSON.stringify({
           project: String(p.name || "").trim() || "film", clips, upscale: up,
           preset: videoPresetName(), container: String(glideVideoWidget("container") || "auto"),
-          crf: Number(glideVideoWidget("crf")) || 0,
+          quality: String(glideVideoWidget("quality") || "high"),
           fps: Number(glideVideoWidget("fps")) || 24,
         }),
       });

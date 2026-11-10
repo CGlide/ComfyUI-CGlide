@@ -222,6 +222,8 @@ const PRESET_CONTAINER = {
   "FFV1 (lossless archive)": "mkv",
 };
 
+const QUALITY_LEVELS = ["max", "high", "medium", "small"];
+
 function injectCSS() {
   if (document.getElementById("glide-video-css")) return;
   const s = document.createElement("style");
@@ -471,13 +473,16 @@ function build(node) {
      and splice it into the end of the header run. An unknown preset (a
      future one, or a fallback) just gets no container token rather than a
      wrong one. */
-  function setDetail(presetName, container, crf) {
+  function setDetail(presetName, container, quality) {
     let html = PRESET_DETAIL[presetName];
-    /* crf above 0 replaces the preset's own crf / cq in the header run;
-       ProRes and FFV1 have none, so nothing changes for them. */
-    const q = Number(crf) || 0;
-    if (html && q > 0) {
-      html = html.replace(/<b>(crf|cq) \d+/, (m, k) => `<b>${k} ${q} (set)`);
+    /* The quality level moves the preset's own crf / cq; the header shows the
+       real value it lands on. Same steps as csglide_video_presets.py:
+       x264 / x265 -3 0 +4 +8, AV1 -4 0 +5 +10. ProRes and FFV1 have none. */
+    const lv = QUALITY_LEVELS.indexOf(String(quality || "high"));
+    if (html && lv >= 0 && lv !== 1) {
+      const steps = /AV1/i.test(presetName) ? [-4, 0, 5, 10] : [-3, 0, 4, 8];
+      html = html.replace(/<b>(crf|cq) (\d+)/, (m, k, v) =>
+        `<b>${k} ${Math.max(0, Math.min(63, Number(v) + steps[lv]))} (${QUALITY_LEVELS[lv]})`);
     }
     if (html) {
       let ext = (container || "auto").toLowerCase();
@@ -730,7 +735,7 @@ app.registerExtension({
       setTimeout(() => {
         const wp = this.widgets?.find((x) => x.name === "preset");
         const wc = this.widgets?.find((x) => x.name === "container");
-        const wq = this.widgets?.find((x) => x.name === "crf");
+        const wq = this.widgets?.find((x) => x.name === "quality");
         if (!wp) return;
         const paint = () => ui.setDetail(wp.value, wc ? wc.value : "auto", wq ? wq.value : 0);
         paint();
@@ -770,6 +775,10 @@ app.registerExtension({
     const onConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {
       const r = onConfigure?.apply(this, arguments);
+      /* For one night this slot was an INT "crf" box; a workflow saved then
+         loads a number into the quality list. Put it back to "high". */
+      const wq = this.widgets?.find((x) => x.name === "quality");
+      if (wq && !QUALITY_LEVELS.includes(wq.value)) wq.value = "high";
       const last = this.properties?.glide_last;
       if (last) {
         setTimeout(() => this._glideVideo?.show(last), 0);

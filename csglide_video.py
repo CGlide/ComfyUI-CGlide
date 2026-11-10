@@ -38,14 +38,14 @@ try:
         available_presets, build_ffmpeg_cmd, container_for,
         needs_preview_copy, pipe_format, probe_video, resolve_preset,
         CONTAINER_CHOICES, containers_for, resolve_container,
-        write_ffmetadata, banner, PRESETS, DEFAULT_PRESET,
+        write_ffmetadata, banner, PRESETS, DEFAULT_PRESET, QUALITY_LEVELS,
     )
 except ImportError:
     from csglide_video_presets import (
         available_presets, build_ffmpeg_cmd, container_for,
         needs_preview_copy, pipe_format, probe_video, resolve_preset,
         CONTAINER_CHOICES, containers_for, resolve_container,
-        write_ffmetadata, banner, PRESETS, DEFAULT_PRESET,
+        write_ffmetadata, banner, PRESETS, DEFAULT_PRESET, QUALITY_LEVELS,
     )
 
 
@@ -551,15 +551,18 @@ class CSGlideVideo:
                                "off -- nothing saved.",
                 }),
                 # Appended last, same reason as container and save_latent.
-                "crf": ("INT", {
-                    "default": 0, "min": 0, "max": 51, "step": 1,
-                    "tooltip": "0 = the preset's own quality (H.264 crf 15, H.265 crf 19, "
-                               "AV1 cq 24, H.264 4:4:4 crf 12, H.265 4:4:4 crf 16).\n"
-                               "Any other number replaces it: higher = smaller file, "
-                               "softer; lower = bigger, closer to the source. "
-                               "Around 18-23 is a good share size for H.264.\n"
-                               "ProRes and FFV1 have no quality number and ignore it. "
-                               "Assemble film uses the same value.",
+                # (Briefly an INT "crf" box in this spot; a workflow saved
+                # with it is put back to "high" by the front end.)
+                "quality": (QUALITY_LEVELS, {
+                    "default": "high",
+                    "tooltip": "high = the preset as tuned (H.264 crf 15, H.265 crf 19, "
+                               "AV1 cq 24).\n"
+                               "max = bigger file, as close to the source as it gets.\n"
+                               "medium / small = smaller files, softer.\n"
+                               "Each codec gets its own numbers behind the level, so "
+                               "medium looks about the same whatever the codec. The "
+                               "line under the preset shows the real value.\n"
+                               "ProRes and FFV1 ignore it. Assemble film uses it too.",
                 }),
             },
             "optional": {
@@ -610,7 +613,7 @@ class CSGlideVideo:
                 save_output=True, save_metadata=True, fallback_on_failure=True,
                 container="auto", audio=None, chain=None, prompt=None,
                 extra_pnginfo=None, latent=None, save_latent="tail",
-                save_latent_in=None, crf=0):
+                save_latent_in=None, quality="high"):
         banner()          # names the ffmpeg in use, once per session
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
@@ -704,7 +707,7 @@ class CSGlideVideo:
                 preview_path=preview_path,
                 meta_path=meta_path,
                 container=ext,
-                crf=crf,
+                quality=quality,
             )
 
             deep = deep_cache.setdefault(name, pipe_format(name) == "rgb48le")

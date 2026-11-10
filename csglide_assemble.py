@@ -353,7 +353,7 @@ class _Ticker:
 
 
 def assemble(clips, preset, container="auto", fps=24.0, prefix="film/film",
-             out_dir=None, log=print, report=None, crf=0):
+             out_dir=None, log=print, report=None, quality="high"):
     """Plan, cut the sound, stream the pictures through one encode.
     Returns {"path", "name", "subfolder", "frames", "seconds", "segments"}.
 
@@ -408,7 +408,7 @@ def assemble(clips, preset, container="auto", fps=24.0, prefix="film/film",
                                fps=fps, out_path=out_path, audio_path=pcm,
                                audio_rate=rate, audio_channels=channels,
                                preview_path=preview_path, meta_path=meta, container=ext,
-                               crf=crf)
+                               quality=quality)
         deep = pipe_format(preset) == "rgb48le"
         tick.stage("frames", done=0, clip=1, label=segs[0]["label"])
         code, err, written = _encode(cmd, frames_of(segs, deep, tick),

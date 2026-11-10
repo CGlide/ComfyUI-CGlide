@@ -1375,10 +1375,7 @@ try:
         project = re.sub(r"[^\w\- ]+", "_", str(data.get("project") or "film")).strip() or "film"
         preset = str(data.get("preset") or "")
         container = str(data.get("container") or "auto")
-        try:
-            crf = max(0, min(51, int(data.get("crf") or 0)))
-        except Exception:
-            crf = 0
+        quality = str(data.get("quality") or "high")
         try:
             fps = float(data.get("fps") or FPS)
         except Exception:
@@ -1403,7 +1400,7 @@ try:
 
         def work():
             return _asm.assemble(clips, preset, container=container, fps=fps, prefix=prefix,
-                                 report=report, crf=crf)
+                                 report=report, quality=quality)
         try:
             res = await asyncio.get_running_loop().run_in_executor(None, work)
         except Exception as exc:
