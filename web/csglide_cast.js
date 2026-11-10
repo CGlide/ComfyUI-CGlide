@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-09c - take-hover previews; delete a bad take; native video controls (rebased onto 1.5.0)";
+const H3_STUDIO_UI_BUILD = "2026-11-10b - Assemble uses Glide Video crf; no 4:2:0 warning with latent hold";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -621,9 +621,6 @@ const CSS = `
 .gcast-cpal .tk button.upk.on { border-color:#FFA931; }
 .gcast-cpal .tk button.upk.on .dot { background:#FFA931; border-color:#FFA931; }
 .gcast-cpal .tk button.upk.on .lt.up { color:#FFA931; }
-/* hover preview of a completed take: a floating panel beside the palette,
-   muted + looping. It is a child of the palette so hovering it does not
-   count as an outside click. */
 /* hover preview of a completed take: a floating panel beside the palette,
    muted + looping. Its own var block, like .gcast-cpal, because it is a
    body-level element outside the node and can't inherit the studio's. */
@@ -6976,8 +6973,11 @@ function buildUI(node) {
       delBtn.textContent = "Deleting…";
       void api.fetchApi("/cglide/delete_take", {
         method: "POST", headers: { "Content-Type": "application/json" },
+        /* the clip goes along so the server can check this file really is
+           one of its takes, and not in use */
         body: JSON.stringify({ take: { name: t.name, subfolder: t.subfolder || "",
-                                        type: t.type === "temp" ? "temp" : "output" } }),
+                                        type: t.type === "temp" ? "temp" : "output" },
+                               clip: t.clip || null }),
       }).then(async (r) => {
         if (r.ok) {
           console.log(`[H3 Studio] take deleted: ${t.name}`);
@@ -7112,6 +7112,7 @@ function buildUI(node) {
     const showAll = !!settings().takesAll;
     let hidden = 0;
     takes.forEach((t, k) => {
+      t.clip = clip;                        // for Delete: the server re-checks against it
       if (!showAll && !t.full && !t.tail && !t.upscale && t.name !== cur) { hidden++; return; }
       const b = el("button", null);
       b.type = "button";
@@ -7417,6 +7418,7 @@ function buildUI(node) {
         body: JSON.stringify({
           project: String(p.name || "").trim() || "film", clips, upscale: up,
           preset: videoPresetName(), container: String(glideVideoWidget("container") || "auto"),
+          crf: Number(glideVideoWidget("crf")) || 0,
           fps: Number(glideVideoWidget("fps")) || 24,
         }),
       });
@@ -7945,7 +7947,9 @@ function buildUI(node) {
     /* Only the guide path cares about chroma: a look carry is a reference, and
        a reference carries no timing, so the -2 correspondence finding does not
        apply to it. */
-    if (links && presetSubsampled(videoPresetName())) {
+    /* With latent hold on, the seam comes from the saved latent and no pixel
+       guide is read back, so the file's chroma does not matter. */
+    if (links && !latentHoldOn() && presetSubsampled(videoPresetName())) {
       const go = confirm(
         "Glide Video is set to a 4:2:0 preset.\n\n"
         + "Linked clips are read back as guides, and a subsampled guide anchors \n"

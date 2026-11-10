@@ -471,8 +471,14 @@ function build(node) {
      and splice it into the end of the header run. An unknown preset (a
      future one, or a fallback) just gets no container token rather than a
      wrong one. */
-  function setDetail(presetName, container) {
+  function setDetail(presetName, container, crf) {
     let html = PRESET_DETAIL[presetName];
+    /* crf above 0 replaces the preset's own crf / cq in the header run;
+       ProRes and FFV1 have none, so nothing changes for them. */
+    const q = Number(crf) || 0;
+    if (html && q > 0) {
+      html = html.replace(/<b>(crf|cq) \d+/, (m, k) => `<b>${k} ${q} (set)`);
+    }
     if (html) {
       let ext = (container || "auto").toLowerCase();
       if (ext === "auto") ext = PRESET_CONTAINER[presetName] || "";
@@ -724,10 +730,11 @@ app.registerExtension({
       setTimeout(() => {
         const wp = this.widgets?.find((x) => x.name === "preset");
         const wc = this.widgets?.find((x) => x.name === "container");
+        const wq = this.widgets?.find((x) => x.name === "crf");
         if (!wp) return;
-        const paint = () => ui.setDetail(wp.value, wc ? wc.value : "auto");
+        const paint = () => ui.setDetail(wp.value, wc ? wc.value : "auto", wq ? wq.value : 0);
         paint();
-        for (const w of [wp, wc]) {
+        for (const w of [wp, wc, wq]) {
           if (!w) continue;
           const prev = w.callback;
           w.callback = function () {

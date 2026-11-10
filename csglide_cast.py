@@ -1376,6 +1376,10 @@ try:
         preset = str(data.get("preset") or "")
         container = str(data.get("container") or "auto")
         try:
+            crf = max(0, min(51, int(data.get("crf") or 0)))
+        except Exception:
+            crf = 0
+        try:
             fps = float(data.get("fps") or FPS)
         except Exception:
             fps = float(FPS)
@@ -1399,7 +1403,7 @@ try:
 
         def work():
             return _asm.assemble(clips, preset, container=container, fps=fps, prefix=prefix,
-                                 report=report)
+                                 report=report, crf=crf)
         try:
             res = await asyncio.get_running_loop().run_in_executor(None, work)
         except Exception as exc:
@@ -1468,39 +1472,71 @@ try:
 
     @_PromptServer.instance.routes.post("/cglide/delete_take")
     async def _delete_take(request):
-        """Delete one completed render and its latent sidecars from disk, for
-        the “delete a bad take” button in the clip's right-click menu. Body:
-        {take: {name, subfolder, type}} — the same record the takes list
-        shows. The kind is output/ or temp/ only, and _render_path keeps the
-        resolved path inside the right folder; anything else is refused.
+        """Delete one take of one project clip, and its latent sidecars, for
+        the Delete button in the Takes list. Body: {take: {name, subfolder,
+        type}, clip: <the same clip record /cglide/clip_takes gets>}.
+
+        Only files this clip's own takes list would show can go: a video
+        (.mkv .mp4 .mov .webm) in output/<project>/, named the way H3 Studio
+        names this clip's renders. Anything else - an image, another
+        project's file, an assembled film, a file in temp/ - is refused, even
+        when it sits inside output/. The take the clip uses now (current
+        draft, or the upscale the next clip joins onto) is refused too.
         Read-write: this removes files."""
         try:
             data = await request.json()
         except Exception:
             return _web.json_response({"error": "body is not JSON"}, status=400)
-        org = _clean_origin(data.get("take")) if isinstance(data, dict) else None
-        if org is None:
+        if not isinstance(data, dict):
+            return _web.json_response({"error": "body is not JSON"}, status=400)
+        org = _clean_origin(data.get("take"))
+        c = data.get("clip")
+        if org is None or not isinstance(c, dict):
             return _web.json_response({"error": "no such take"}, status=400)
+        if org["type"] != "output" or os.path.splitext(org["name"])[1].lower() not in _RENDER_EXT:
+            return _web.json_response({"error": "only a clip's own video renders can be deleted"},
+                                      status=403)
+
+        def in_use(rec):
+            return isinstance(rec, dict) and isinstance(rec.get("name"), str) \
+                and os.path.basename(rec["name"]) == org["name"]
 
         def wipe():
+            look = dict(c)
+            look["up"] = None                       # upscales are takes too
+            sub = org["subfolder"].replace("\\", "/").strip("/")
+            mine = any(o["name"] == org["name"] and o["subfolder"].strip("/") == sub
+                       for o, _ in (_latest_for_clip(look) or []))
+            if not mine:
+                return "not a take of this clip"
+            if in_use(c.get("rec")) or in_use(c.get("up")):
+                return "this take is in use - pick another one first"
             video = _render_path(org)
             if video is None:
                 return None
+            # The video first: if it is locked (open in a player), nothing is
+            # lost - its latents stay with it.
+            os.remove(video)
             removed = [video]
             for ext in (LATENT_SIDECAR, FULL_SIDECAR):
                 side = _render_path(org, ext)
                 if side is not None:
-                    os.remove(side)
-            os.remove(video)
+                    try:
+                        os.remove(side)
+                        removed.append(side)
+                    except OSError:
+                        pass
             return removed
 
         try:
-            removed = await asyncio.get_running_loop().run_in_executor(None, wipe)
+            res = await asyncio.get_running_loop().run_in_executor(None, wipe)
         except OSError as exc:
             return _web.json_response({"error": str(exc)}, status=500)
-        if removed is None:
+        if res is None:
             return _web.json_response({"error": "take file not found"}, status=404)
-        return _web.json_response({"deleted": [os.path.basename(p) for p in removed]})
+        if isinstance(res, str):
+            return _web.json_response({"error": res}, status=403)
+        return _web.json_response({"deleted": [os.path.basename(p) for p in res]})
 
     @_PromptServer.instance.routes.get("/cglide/pick_span")
     async def _pick_span(request):

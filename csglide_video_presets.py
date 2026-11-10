@@ -580,15 +580,37 @@ def write_ffmetadata(path, fields):
     return path
 
 
+QUALITY_FLAGS = ("-crf", "-cq", "-qp")
+
+
+def with_quality(args, crf):
+    """args with the preset's crf / cq / qp replaced by crf. 0 or None keeps
+    the preset's own value. Presets with no quality number are unchanged."""
+    try:
+        crf = int(crf or 0)
+    except (TypeError, ValueError):
+        crf = 0
+    if crf <= 0:
+        return args
+    out = list(args)
+    for i, a in enumerate(out[:-1]):
+        if a in QUALITY_FLAGS:
+            out[i + 1] = str(crf)
+    return out
+
+
 def build_ffmpeg_cmd(preset, width, height, fps, out_path,
                      audio_path=None, audio_rate=None, audio_channels=2,
-                     preview_path=None, meta_path=None, container=None):
+                     preview_path=None, meta_path=None, container=None, crf=0):
     """Build a single-pass ffmpeg command.
 
     Frames are written to stdin as raw rgb24, or rgb48le for the
     high-fidelity presets -- see pipe_format(). Audio, if given, is a
     second input. One process, one master file -- nothing to clean up
     afterwards.
+
+    crf, when above 0, replaces the preset's own crf / cq / qp (see
+    with_quality); ProRes and FFV1 have none and ignore it.
 
     If preview_path is given, a second small H.264 output is muxed in
     the same pass. Use it for ProRes/FFV1 masters, which browsers can't
@@ -626,7 +648,7 @@ def build_ffmpeg_cmd(preset, width, height, fps, out_path,
         cmd += ["-map", "1:a:0"] + AUDIO_ARGS + ["-shortest"]
     if meta_idx is not None:
         cmd += ["-map_metadata", str(meta_idx)]
-    args = list(p["args"])
+    args = with_quality(p["args"], crf)
 
     # The hvc1 tag is an ISOBMFF thing. Matroska has no tag table for it
     # and ffmpeg refuses the mux outright ("could not find tag for codec

@@ -550,6 +550,17 @@ class CSGlideVideo:
                                "these.\n"
                                "off -- nothing saved.",
                 }),
+                # Appended last, same reason as container and save_latent.
+                "crf": ("INT", {
+                    "default": 0, "min": 0, "max": 51, "step": 1,
+                    "tooltip": "0 = the preset's own quality (H.264 crf 15, H.265 crf 19, "
+                               "AV1 cq 24, H.264 4:4:4 crf 12, H.265 4:4:4 crf 16).\n"
+                               "Any other number replaces it: higher = smaller file, "
+                               "softer; lower = bigger, closer to the source. "
+                               "Around 18-23 is a good share size for H.264.\n"
+                               "ProRes and FFV1 have no quality number and ignore it. "
+                               "Assemble film uses the same value.",
+                }),
             },
             "optional": {
                 "audio": ("AUDIO", {
@@ -599,7 +610,7 @@ class CSGlideVideo:
                 save_output=True, save_metadata=True, fallback_on_failure=True,
                 container="auto", audio=None, chain=None, prompt=None,
                 extra_pnginfo=None, latent=None, save_latent="tail",
-                save_latent_in=None):
+                save_latent_in=None, crf=0):
         banner()          # names the ffmpeg in use, once per session
         if images is None or len(images) == 0:
             raise ValueError("Glide Video: no frames on the images input.")
@@ -693,6 +704,7 @@ class CSGlideVideo:
                 preview_path=preview_path,
                 meta_path=meta_path,
                 container=ext,
+                crf=crf,
             )
 
             deep = deep_cache.setdefault(name, pipe_format(name) == "rgb48le")
