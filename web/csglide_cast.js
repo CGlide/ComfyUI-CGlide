@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-08b - Assemble banner driven from H3 Studio too";
+const H3_STUDIO_UI_BUILD = "2026-11-09c - take-hover previews; delete a bad take; native video controls (rebased onto 1.5.0)";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -621,6 +621,44 @@ const CSS = `
 .gcast-cpal .tk button.upk.on { border-color:#FFA931; }
 .gcast-cpal .tk button.upk.on .dot { background:#FFA931; border-color:#FFA931; }
 .gcast-cpal .tk button.upk.on .lt.up { color:#FFA931; }
+/* hover preview of a completed take: a floating panel beside the palette,
+   muted + looping. It is a child of the palette so hovering it does not
+   count as an outside click. */
+/* hover preview of a completed take: a floating panel beside the palette,
+   muted + looping. Its own var block, like .gcast-cpal, because it is a
+   body-level element outside the node and can't inherit the studio's. */
+.gcast-tkpv {
+  --h3-panel:#212121; --h3-raise:#2b2b2b; --h3-line:#3b3b3b;
+  --h3-txt:#e3e3e3; --h3-dim:#979797; --h3-accent:#58d1ff;
+  --gc-wave:#59c14f;
+  position:fixed; z-index:9100; box-sizing:border-box;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  color:var(--h3-txt); background:var(--h3-panel);
+  border:1px solid var(--h3-line); border-radius:10px;
+  padding:6px 6px 4px; box-shadow:0 22px 60px #000d, 0 2px 10px #0009; min-width:160px;
+}
+.gcast-tkpv[data-mode="fl2va"] { --h3-accent:#59c14f; }
+.gcast-tkpv video, .gcast-tkpv img { display:block; width:auto; max-width:min(480px,46vw);
+  max-height:52vh; border-radius:6px; background:#06222e; }
+.gcast-tkpv .cap { max-width:min(480px,46vw); font-size:10px; color:var(--h3-dim);
+  padding:5px 2px 0; font-family:ui-monospace,Consolas,monospace;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* actions row: "Use this take" on the left, "Delete" on the right; a lone
+   Delete keeps the right edge via its auto left margin */
+.gcast-tkpv .act { display:flex; align-items:center; justify-content:space-between;
+  gap:6px; margin:6px 2px 2px; }
+.gcast-tkpv .pick { all:unset; pointer-events:auto; display:block;
+  padding:4px 8px; border-radius:6px; font-size:10.5px; text-align:center;
+  color:#091d21; background:var(--h3-accent); cursor:pointer; }
+.gcast-tkpv .pick:hover { filter:brightness(1.15); }
+.gcast-tkpv .del { all:unset; pointer-events:auto; display:block;
+  padding:4px 8px; border-radius:6px; font-size:10.5px; text-align:center;
+  color:#ffd0d0; background:#5a2126; border:1px solid #7a2e34; cursor:pointer; }
+.gcast-tkpv .del:hover { background:#70262c; }
+.gcast-tkpv .del.armed { color:#fff; background:#a63a42; border-color:#d16168; }
+.gcast-tkpv .del:disabled { opacity:.55; cursor:default; }
+.gcast-tkpv .pick, .gcast-tkpv .del { width:fit-content; margin:0; }
+.gcast-tkpv .del { margin-left:auto; }
 .gcast-cpal .tk .dot { width:7px; height:7px; border-radius:50%; flex:none;
   box-shadow:inset 0 0 0 1px var(--h3-line); }
 .gcast-cpal .tk button.on .dot { background:#FF9CF9; box-shadow:none; }
@@ -6775,10 +6813,12 @@ function buildUI(node) {
       e.preventDefault(); e.stopPropagation();
       return;
     }
+    if (tkpEl && tkpEl.contains(e.target)) return;   // scrolling inside a preview isn't a dismissal
     closeClipPalette();
   }
   function closeClipPalette() {
     cpDismissing = false;
+    hideTakePreview();
     if (!cpMenu) return;
     cpMenu.remove();
     cpMenu = null;
@@ -6788,6 +6828,7 @@ function buildUI(node) {
   }
   function cpOutside(e) {
     if (!cpMenu || cpMenu.contains(e.target) || cpDismissing) return;
+    if (tkpEl && tkpEl.contains(e.target)) return;   // preview panel: not an outside click
     cpDismissing = true;
     const done = () => {
       window.removeEventListener("pointerup", done, true);
@@ -6874,6 +6915,158 @@ function buildUI(node) {
       : d.toLocaleDateString([], { day: "2-digit", month: "2-digit" }) + " " + hm;
   }
 
+  /* Hover preview for the TAKES list. Built from the row under the pointer,
+     served from ComfyUI's /view endpoint (no extra server route). The panel
+     is a body child, but outside-click dismissal of the palette exempts it,
+     so previewing and picking don't tear the palette down underneath you. */
+  let tkpEl = null;          // the floating preview panel
+  let tkpFor = "";           // take identity currently previewed
+  let tkpLoadTimer = 0;      // hover dwell before the panel is built
+  let tkpHideTimer = 0;      // dwell before the panel is taken down
+  const TKP_VIDEO_EXT = [".mp4", ".webm", ".mov", ".m4v"];
+  const TKP_UNPLAYABLE_EXT = [".mkv", ".avi", ".ts"];
+
+  function takePreviewURL(t) {
+    return api.apiURL(`/view?filename=${encodeURIComponent(t.name)}`
+      + `&subfolder=${encodeURIComponent(t.subfolder || "")}`
+      + `&type=${encodeURIComponent(t.type === "temp" ? "temp" : "output")}`);
+  }
+
+  function hideTakePreview() {
+    clearTimeout(tkpLoadTimer); tkpLoadTimer = 0;
+    clearTimeout(tkpHideTimer); tkpHideTimer = 0;
+    tkpFor = "";
+    if (tkpEl) { tkpEl.remove(); tkpEl = null; }
+  }
+
+  function placeTakePreviewPanel(row, panel) {
+    if (!cpMenu || !panel || !panel.isConnected) return;
+    const menuRect = cpMenu.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const vw = panel.offsetWidth, vh = panel.offsetHeight;
+    let left = menuRect.right + 8;
+    if (left + vw > window.innerWidth - 8) left = menuRect.left - vw - 8;
+    let top = rowRect.top;
+    if (top + vh > window.innerHeight - 8) top = window.innerHeight - vh - 8;
+    panel.style.left = Math.max(8, left) + "px";
+    panel.style.top = Math.max(8, top) + "px";
+  }
+
+  function takeDeleteButton(t, canDelete, onFailCap, onDeleted) {
+    if (!canDelete) return null;
+    const delBtn = el("button", "del", "Delete this take");
+    delBtn.type = "button";
+    delBtn.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    delBtn.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (!delBtn.dataset.armed) {
+        delBtn.dataset.armed = "1";
+        delBtn.textContent = "Really delete — click again";
+        delBtn.classList.add("armed");
+        clearTimeout(delBtn._disarm);
+        delBtn._disarm = setTimeout(() => {
+          if (!delBtn.isConnected) return;
+          delete delBtn.dataset.armed;
+          delBtn.classList.remove("armed");
+          delBtn.textContent = "Delete this take";
+        }, 4000);
+        return;
+      }
+      delBtn.disabled = true;
+      delBtn.textContent = "Deleting…";
+      void api.fetchApi("/cglide/delete_take", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ take: { name: t.name, subfolder: t.subfolder || "",
+                                        type: t.type === "temp" ? "temp" : "output" } }),
+      }).then(async (r) => {
+        if (r.ok) {
+          console.log(`[H3 Studio] take deleted: ${t.name}`);
+          hideTakePreview();
+          onDeleted();
+        } else {
+          const err = await r.json().catch(() => ({}));
+          onFailCap(`delete failed — ${err.error || r.status}`);
+          delete delBtn.dataset.armed;
+          delBtn.classList.remove("armed");
+          delBtn.disabled = false;
+          delBtn.textContent = "Delete this take";
+        }
+      }).catch((e) => {
+        onFailCap(`delete failed — ${e.message || e}`);
+        delBtn.disabled = false;
+        delBtn.textContent = "Delete this take";
+      });
+    });
+    return delBtn;
+  }
+
+  function buildTakePreview(row, t, onPick, onRefresh, canDelete) {
+    if (!cpMenu) return;
+    const id = t.name + "@" + (t.subfolder || "");
+    hideTakePreview();
+    tkpFor = id;
+    tkpEl = el("div", "gcast-tkpv");
+    tkpEl.dataset.mode = cpMenu.dataset.mode || "";
+    tkpEl.addEventListener("pointerenter", () => clearTimeout(tkpHideTimer));
+    tkpEl.addEventListener("pointerleave", () => { clearTimeout(tkpHideTimer); tkpHideTimer = setTimeout(hideTakePreview, 160); });
+    tkpEl.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    const ext = t.name.toLowerCase();
+    const failCap = () => [...tkpEl.querySelectorAll(".cap")].pop();
+    if (TKP_UNPLAYABLE_EXT.some((e) => ext.endsWith(e))) {
+      tkpEl.append(el("div", "cap", `${t.name} — .${ext.split(".").pop()} can't play in the browser`));
+      tkpEl.append(el("div", "cap", "open it in the outputs folder instead"));
+      const del = takeDeleteButton(t, canDelete, (msg) => { failCap().textContent = msg; }, onRefresh);
+      if (del) {
+        const acts = el("div", "act");
+        acts.append(del);
+        tkpEl.append(acts);
+      }
+      document.body.append(tkpEl);
+      placeTakePreviewPanel(row, tkpEl);
+      return;
+    }
+    const isVideo = TKP_VIDEO_EXT.some((e) => ext.endsWith(e));
+    const v = document.createElement(isVideo ? "video" : "img");
+    v.src = takePreviewURL(t);
+    if (isVideo) {
+      /* native controls: seek, pause and crucially UNMUTE — the hover preview
+         starts muted and only plays sound when the user turns it up. */
+      v.muted = true; v.loop = true; v.autoplay = true; v.playsInline = true;
+      v.controls = true;
+    }
+    const cap = el("div", "cap",
+      `${t.name}${t.subfolder ? " · " + t.subfolder : ""}${t.w ? ` · ${t.w}\u00d7${t.h}` : ""} · ${takeWhen(t.mtime)}`);
+    tkpEl.append(v); tkpEl.append(cap);
+    const acts = el("div", "act");
+    acts.append(el("button", "pick", t.upscale ? "Join onto this upscale" : "Use this take"));
+    const pick = acts.lastChild;
+    pick.type = "button";
+    pick.addEventListener("click", (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      closeClipPalette();
+      onPick();
+    });
+    v.addEventListener("loadedmetadata", () => { if (tkpEl) placeTakePreviewPanel(row, tkpEl); });
+    v.addEventListener("error", () => {
+      cap.textContent = `${t.name} — couldn't preview in this browser`;
+      if (tkpEl) placeTakePreviewPanel(row, tkpEl);
+    });
+    const del = takeDeleteButton(t, canDelete, (msg) => { failCap().textContent = msg; }, onRefresh);
+    if (del) acts.append(del);
+    tkpEl.append(acts);
+    document.body.append(tkpEl);
+    placeTakePreviewPanel(row, tkpEl);
+  }
+
+  function queueTakePreview(row, t, onPick, onRefresh, canDelete) {
+    if (!cpMenu || !cpMenu.contains(row)) return;
+    clearTimeout(tkpLoadTimer); tkpLoadTimer = 0;
+    clearTimeout(tkpHideTimer); tkpHideTimer = 0;
+    const id = t.name + "@" + (t.subfolder || "");
+    if (tkpFor === id && tkpEl) return;    // already on screen: keep it
+    tkpLoadTimer = setTimeout(() => buildTakePreview(row, t, onPick, onRefresh, canDelete), 180);
+  }
+
   async function loadTakes(i, box, menu, x, y) {
     const p = proj(), sh = p.shots[i];
     if (!sh) return;
@@ -6938,6 +7131,14 @@ function buildUI(node) {
               : (t.upscale ? "\nClick to make the next clip join onto this upscale." : "\nClick to use this take."));
       if (t.upscale) b.classList.add("upk");
       b.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      b.addEventListener("pointerenter", () => queueTakePreview(b, t,
+        () => { if (t.upscale) pickUpTake(i, t); else pickTake(i, t, k === 0); },
+        () => { if (cpMenu === menu) void loadTakes(i, box, menu, x, y); },
+        !on));
+      b.addEventListener("pointerleave", () => {
+        clearTimeout(tkpLoadTimer); tkpLoadTimer = 0;
+        clearTimeout(tkpHideTimer); tkpHideTimer = setTimeout(hideTakePreview, 160);
+      });
       b.addEventListener("click", (ev) => {
         ev.preventDefault(); ev.stopPropagation();
         closeClipPalette();

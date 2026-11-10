@@ -1466,6 +1466,42 @@ try:
             return _web.json_response({"error": str(exc)}, status=500)
         return _web.json_response({"takes": res})
 
+    @_PromptServer.instance.routes.post("/cglide/delete_take")
+    async def _delete_take(request):
+        """Delete one completed render and its latent sidecars from disk, for
+        the “delete a bad take” button in the clip's right-click menu. Body:
+        {take: {name, subfolder, type}} — the same record the takes list
+        shows. The kind is output/ or temp/ only, and _render_path keeps the
+        resolved path inside the right folder; anything else is refused.
+        Read-write: this removes files."""
+        try:
+            data = await request.json()
+        except Exception:
+            return _web.json_response({"error": "body is not JSON"}, status=400)
+        org = _clean_origin(data.get("take")) if isinstance(data, dict) else None
+        if org is None:
+            return _web.json_response({"error": "no such take"}, status=400)
+
+        def wipe():
+            video = _render_path(org)
+            if video is None:
+                return None
+            removed = [video]
+            for ext in (LATENT_SIDECAR, FULL_SIDECAR):
+                side = _render_path(org, ext)
+                if side is not None:
+                    os.remove(side)
+            os.remove(video)
+            return removed
+
+        try:
+            removed = await asyncio.get_running_loop().run_in_executor(None, wipe)
+        except OSError as exc:
+            return _web.json_response({"error": str(exc)}, status=500)
+        if removed is None:
+            return _web.json_response({"error": "take file not found"}, status=404)
+        return _web.json_response({"deleted": [os.path.basename(p) for p in removed]})
+
     @_PromptServer.instance.routes.get("/cglide/pick_span")
     async def _pick_span(request):
         ref = request.rel_url.query.get("file") or ""
