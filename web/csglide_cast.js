@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 /* Printed once when the file loads: tells you at a glance, in the F12
  * console, which build the browser is actually running (cache or not). */
-const H3_STUDIO_UI_BUILD = "2026-11-10c - Assemble uses the Glide Video quality level";
+const H3_STUDIO_UI_BUILD = "2026-11-11b - Save and Load: dialog first, writes cannot hang, never silent (issue 44)";
 console.log(`[H3 Studio] UI build ${H3_STUDIO_UI_BUILD}`);
 
 /* =========================================================================
@@ -32,10 +32,50 @@ const NODE_ID = "CSGlideCastCS";
  */
 let pickerBusy = false;
 
-function pickerUnavailable(e) {
-  return !!e && (e.name === "NotAllowedError" ||
-                 e.name === "SecurityError" ||
-                 e.name === "InvalidStateError");
+/* Issue 44 (Windows 11): once the modern dialog has failed - refused, or
+ * thrown anything that is not the user pressing Cancel - it tends to keep
+ * failing for the rest of the session. So the first failure switches H3
+ * Studio to the classic routes until the page is reloaded: the browser's
+ * plain file chooser for Load, a download plus a message for Save. */
+let nativePickerBroken = false;
+
+function markPickerBroken(e, what) {
+  if (!nativePickerBroken) {
+    console.warn(`[H3 Studio] the ${what} dialog failed, using the classic file `
+               + "chooser and downloads for the rest of this session", e);
+  }
+  nativePickerBroken = true;
+}
+
+const canSavePicker = () => !!window.showSaveFilePicker && !nativePickerBroken;
+const canOpenPicker = () => !!window.showOpenFilePicker && !nativePickerBroken;
+
+/* A save that had to go to the downloads folder says so, every time: a save
+ * that lands somewhere you did not choose, without a word, reads as no save.
+ * The long explanation once per session, a one-liner after that. */
+let downloadNoticeShown = false;
+function downloadInstead(blob, suggested, what, reason) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = suggested;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  if (reason) {
+    /* the dialog worked but the write did not - say exactly what failed */
+    alert(`H3 Studio: ${reason}, so the ${what} was downloaded as \u201c${suggested}\u201d `
+        + "to your usual downloads folder instead.");
+  } else if (!downloadNoticeShown) {
+    downloadNoticeShown = true;
+    alert(`H3 Studio: the save dialog is not working in this browser session, so the ${what} `
+        + `was downloaded as \u201c${suggested}\u201d to your usual downloads folder.\n\n`
+        + "Until you reload the page, saves go there directly. To load it back, "
+        + "click Load and pick it from the downloads folder.");
+  } else {
+    alert(`H3 Studio: ${what} saved to your downloads folder as \u201c${suggested}\u201d.`);
+  }
 }
 
 async function withPicker(fn) {
@@ -51,6 +91,86 @@ async function withPicker(fn) {
     pickerBusy = false;
   }
 }
+/* -- writes and reads that cannot hang (issue 44) -----------------------
+ * Chrome writes to a temporary file and only moves it into place on
+ * close(), after a Safe Browsing / antivirus pass. With Defender's
+ * Controlled Folder Access or a slow scan that close() can sit there for
+ * good, and the toolbar was disabled for exactly as long as the wait. Every
+ * write now has a time budget; past it the file is downloaded instead and
+ * the toolbar comes back. */
+function withTimeout(promise, ms, what) {
+  let timer = 0;
+  const gate = new Promise((_, rej) => {
+    timer = setTimeout(() => {
+      const e = new Error(`${what} did not finish in ${Math.round(ms / 1000)}s`);
+      e.name = "TimeoutError";
+      rej(e);
+    }, ms);
+  });
+  return Promise.race([promise, gate]).finally(() => clearTimeout(timer));
+}
+
+/* 45s, plus time for the size at a slow 4 MB/s: a multi-GB pack on a hard
+ * disk is allowed to take minutes, a 40 kB preset is not. */
+const writeBudgetMs = (blob) => 45000 + Math.round((blob.size / (4 * 1048576)) * 1000);
+
+async function writeHandle(handle, blob) {
+  let w = null, dead = false;
+  const job = (async () => {
+    w = await handle.createWritable();
+    if (dead) { try { await w.abort(); } catch (_) {} return; }
+    await w.write(blob);
+    await w.close();
+  })();
+  try {
+    await withTimeout(job, writeBudgetMs(blob), `writing ${handle.name}`);
+  } catch (e) {
+    /* given up on: a write that wakes up later must not land a second copy
+       next to the download */
+    dead = true;
+    if (w) { try { Promise.resolve(w.abort()).catch(() => {}); } catch (_) {} }
+    throw e;
+  }
+}
+
+/* Asked while the click is still fresh. A handle that came from Load is
+ * read-only until the user agrees, and one from earlier can have lost its
+ * permission. */
+async function canWrite(handle) {
+  try {
+    if (!handle.queryPermission) return true;
+    if ((await handle.queryPermission({ mode: "readwrite" })) === "granted") return true;
+    return (await handle.requestPermission({ mode: "readwrite" })) === "granted";
+  } catch (e) {
+    return false;
+  }
+}
+
+const whyText = (e) => (e && (e.message || e.name)) ? String(e.message || e.name) : "unknown error";
+
+/* One read per picked file, shared by whoever needs it: Load looks inside
+ * the file to tell a clip from a project, then hands the SAME file to the
+ * loader, which used to read it all over again. One retry, because a file
+ * the antivirus is still holding fails with NotReadableError and is fine a
+ * moment later. */
+const fileBytesCache = new WeakMap();
+function fileBytes(file) {
+  let job = fileBytesCache.get(file);
+  if (!job) {
+    job = (async () => {
+      try { return await file.arrayBuffer(); }
+      catch (e) {
+        await new Promise((r) => setTimeout(r, 400));
+        return await file.arrayBuffer();
+      }
+    })();
+    fileBytesCache.set(file, job);
+    job.catch(() => fileBytesCache.delete(file));
+  }
+  return job;
+}
+const fileText = async (file) => new TextDecoder().decode(await fileBytes(file));
+
 const ASSET_SUBFOLDER = "cglide";
 const FPS = 24;
 const MAX_IMAGES = 9, MAX_VIDEOS = 3, MAX_AUDIOS = 3;
@@ -2029,15 +2149,40 @@ async function uploadFile(file) {
   return d.subfolder ? `${d.subfolder}/${d.name}` : d.name;
 }
 
+/* The classic file chooser. Issue 44: the input is now part of the page
+ * while its dialog is open (a detached one can be dropped before it reports
+ * the file), Cancel settles the promise instead of leaving it hanging, and
+ * the input is removed again either way.
+ *
+ * A browser opens this chooser only right after a click. When the click was
+ * already spent on a modern dialog that failed, it would silently do
+ * nothing - so say so instead and let the next click open it. */
 function pickFile(accept, multiple) {
   return new Promise((resolve) => {
+    const ua = navigator.userActivation;
+    if (ua && !ua.isActive) {
+      alert("H3 Studio: the file dialog could not open this time. Click the "
+          + "button again and the classic file chooser will open.");
+      resolve(multiple ? [] : null);
+      return;
+    }
     const inp = document.createElement("input");
     inp.type = "file"; inp.accept = accept;
     if (multiple) inp.multiple = true;
-    inp.onchange = () => {
-      const list = inp.files ? Array.from(inp.files) : [];
-      resolve(multiple ? list : (list[0] || null));
+    inp.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0";
+    document.body.appendChild(inp);
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      inp.remove();
+      resolve(v);
     };
+    inp.addEventListener("change", () => {
+      const list = inp.files ? Array.from(inp.files) : [];
+      finish(multiple ? list : (list[0] || null));
+    });
+    inp.addEventListener("cancel", () => finish(multiple ? [] : null));
     inp.click();
   });
 }
@@ -5630,39 +5775,51 @@ function buildUI(node) {
 
   /* -- OS dialogs, with a download fallback where the API is missing -- */
 
-  async function writeOut(blob, suggested, pack) {
-    if (window.showSaveFilePicker) {
+  /* `make` builds the blob and is only called AFTER the dialog: packing
+   * fetches every piece of media, and a dialog asked for after that has
+   * lost the click it needs (issue 44). Nothing is disabled while the
+   * dialog is open, so a dialog that never answers cannot take the toolbar
+   * with it. */
+  async function writeOut(make, suggested, pack, label) {
+    let handle = null;
+    if (canSavePicker()) {
       try {
-        const handle = await withPicker(() => window.showSaveFilePicker({
+        handle = await withPicker(() => window.showSaveFilePicker({
           suggestedName: suggested,
           types: [pack
             ? { description: "H3 Studio pack", accept: { "application/zip": [".h3pack"] } }
             : { description: "H3 Studio preset", accept: { "application/json": [".json"] } }],
         }));
-        const w = await handle.createWritable();
-        await w.write(blob);
-        await w.close();
+      } catch (e) {
+        if (e && e.name === "AbortError") return false;
+        markPickerBroken(e, "save");
+      }
+    }
+    busy(label);
+    const blob = await make();
+    const what = pack ? "clip pack" : "clip";
+    if (handle) {
+      try {
+        await writeHandle(handle, blob);
         fileHandle = handle; fileIsPack = pack; fileLabel = handle.name;
         return true;
       } catch (e) {
-        if (e && e.name === "AbortError") return false;
-        console.warn("[H3 Studio] save picker failed, downloading instead", e);
+        console.warn("[H3 Studio] could not write " + handle.name + ", downloading instead", e);
+        downloadInstead(blob, suggested, what,
+                        `could not write \u201c${handle.name}\u201d (${whyText(e)})`);
+        fileHandle = null; fileIsPack = pack; fileLabel = suggested;
+        return true;
       }
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = suggested;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    downloadInstead(blob, suggested, what);
     fileHandle = null; fileIsPack = pack; fileLabel = suggested;
     return true;
   }
 
   async function saveAs(pack) {
-    busy(pack ? "packing\u2026" : "saving\u2026");
     try {
-      const blob = pack ? await buildPack() : plainBlob();
-      await writeOut(blob, defaultName(pack), pack);
+      await writeOut(() => (pack ? buildPack() : plainBlob()), defaultName(pack), pack,
+                     pack ? "packing\u2026" : "saving\u2026");
     } catch (e) {
       alert("H3 Studio: could not save \u2014 " + e);
     } finally { busy(null); }
@@ -5670,12 +5827,21 @@ function buildUI(node) {
 
   async function saveOver() {
     if (!fileHandle) return saveAs(fileIsPack);
+    const handle = fileHandle;
+    /* before anything slow, while the click still counts */
+    if (!(await canWrite(handle))) { fileHandle = null; return saveAs(fileIsPack); }
     busy(fileIsPack ? "packing\u2026" : "saving\u2026");
     try {
       const blob = fileIsPack ? await buildPack() : plainBlob();
-      const w = await fileHandle.createWritable();
-      await w.write(blob);
-      await w.close();
+      try {
+        await writeHandle(handle, blob);
+      } catch (e) {
+        console.warn("[H3 Studio] could not write back over " + handle.name + ", downloading instead", e);
+        const name = fileLabel || defaultName(fileIsPack);
+        downloadInstead(blob, name, "clip",
+                        `could not write back over \u201c${handle.name}\u201d (${whyText(e)})`);
+        fileHandle = null;
+      }
     } catch (e) {
       alert("H3 Studio: could not save \u2014 " + e);
     } finally { busy(null); }
@@ -5697,10 +5863,10 @@ function buildUI(node) {
   async function sniffKind(file) {
     try {
       if (/\.(zip|h3projpack|h3pack)$/i.test(file.name)) {
-        const map = await zipRead(await file.arrayBuffer());
+        const map = await zipRead(await fileBytes(file));
         return map.has("project.json") ? "project" : "clip";
       }
-      const d = JSON.parse(await file.text());
+      const d = JSON.parse(await fileText(file));
       if (Array.isArray(d.shots)) return "project";
       if (d.meta && /project/i.test(String(d.meta.app || ""))) return "project";
       return "clip";
@@ -5715,12 +5881,22 @@ function buildUI(node) {
   async function smartLoad() {
     const picked = await pickFileForOpen();
     if (!picked) return;
+    /* Read the file from disk ONCE, then hand both the sniff and the loader
+     * the in-memory copy (issue 44: the second read was suspected of
+     * tripping Windows file monitoring). It also guards against the file
+     * changing between the two reads. */
+    try {
+      await fileBytes(picked.file);
+    } catch (e) {
+      alert("H3 Studio: could not read " + picked.file.name + " \u2014 " + e);
+      return;
+    }
     const kind = await sniffKind(picked.file);
     return kind === "project" ? openProject(picked) : doLoad(picked);
   }
 
   async function pickFileForOpen() {
-    if (window.showOpenFilePicker) {
+    if (canOpenPicker()) {
       try {
         const [h] = await withPicker(() => window.showOpenFilePicker({
           types: [{ description: "H3 Studio preset or pack",
@@ -5730,6 +5906,7 @@ function buildUI(node) {
         return { file: f, handle: h };
       } catch (e) {
         if (e && e.name === "AbortError") return null;
+        markPickerBroken(e, "open");
       }
     }
     const f = await pickFile(".json,.h3pack,.h3projpack,.zip");
@@ -5742,10 +5919,10 @@ function buildUI(node) {
   async function stateFromFile(file) {
     const isPack = /\.(h3pack|zip)$/i.test(file.name);
     if (!isPack) {
-      const parsed = JSON.parse(await file.text());
+      const parsed = JSON.parse(await fileText(file));
       return { state: parsed.state || parsed, isPack: false };
     }
-    const map = await zipRead(await file.arrayBuffer());
+    const map = await zipRead(await fileBytes(file));
     const raw = map.get("state.json");
     if (!raw) throw new Error("pack has no state.json");
     const state = JSON.parse(new TextDecoder().decode(raw));
@@ -5777,7 +5954,7 @@ function buildUI(node) {
   /* Same dialog, several files at once - importing a finished film one shot
    * at a time was the tedious part. */
   async function pickFilesForOpen() {
-    if (window.showOpenFilePicker) {
+    if (canOpenPicker()) {
       try {
         const hs = await withPicker(() => window.showOpenFilePicker({
           multiple: true,
@@ -5789,6 +5966,7 @@ function buildUI(node) {
         return out;
       } catch (e) {
         if (e && e.name === "AbortError") return [];
+        markPickerBroken(e, "open");
       }
     }
     return (await pickFile(".json,.h3pack,.h3projpack,.zip", true)) || [];
@@ -8524,53 +8702,48 @@ function buildUI(node) {
     stash();
     if (!p.shots.length) { alert("H3 Studio: this project has no clips yet."); return; }
     if (asNew) projHandle = null;
-    busy("saving project\u2026");
-    let wrote = false;
+    const blob = projectBlob();
+    const stem = (p.name || "h3-project").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "h3-project";
+    const suggested = stem + ".h3proj.json";
     try {
-      const blob = projectBlob();
-      const stem = (p.name || "h3-project").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "h3-project";
-      const suggested = stem + ".h3proj.json";
-      if (projHandle) {
-        const w = await projHandle.createWritable();
-        await w.write(blob); await w.close();
-        projLabel = projHandle.name;
-        wrote = true;
-      } else {
-        let cancelled = false, noDialog = !window.showSaveFilePicker;
-        if (!noDialog) {
-          try {
-            const h = await withPicker(() => window.showSaveFilePicker({
-              suggestedName: suggested,
-              types: [{ description: "H3 Studio project", accept: { "application/json": [".json"] } }],
-            }));
-            const w = await h.createWritable();
-            await w.write(blob); await w.close();
-            projHandle = h; projLabel = h.name;
-            wrote = true;
-          } catch (e) {
-            if (e && e.name === "AbortError") cancelled = true;
-            else if (pickerUnavailable(e)) {
-              console.warn("[H3 Studio] save dialog refused, downloading instead", e);
-              noDialog = true;
-            } else throw e;
-          }
+      /* Dialog and permission first, nothing disabled yet: a dialog that
+         never answers must not take the toolbar with it (issue 44). */
+      let handle = projHandle;
+      if (handle && !(await canWrite(handle))) handle = null;
+      if (!handle && canSavePicker()) {
+        try {
+          handle = await withPicker(() => window.showSaveFilePicker({
+            suggestedName: suggested,
+            types: [{ description: "H3 Studio project", accept: { "application/json": [".json"] } }],
+          }));
+        } catch (e) {
+          if (e && e.name === "AbortError") return;
+          markPickerBroken(e, "save");
         }
-        /* Download fallback: either there is no File System Access here, or
-         * the dialog refused us. Either way the project is not lost, and it
-         * is said out loud - a silent save reads as a save that did not
-         * happen. */
-        if (noDialog && !cancelled && !wrote) {
-          const a = document.createElement("a");
-          a.href = URL.createObjectURL(blob);
-          a.download = suggested;
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      }
+      busy("saving project\u2026");
+      let wrote = false;
+      if (handle) {
+        try {
+          await writeHandle(handle, blob);
+          projHandle = handle; projLabel = handle.name;
+          wrote = true;
+        } catch (e) {
+          console.warn("[H3 Studio] could not write " + handle.name + ", downloading instead", e);
+          projHandle = null;
+          downloadInstead(blob, suggested, "project",
+                          `could not write \u201c${handle.name}\u201d (${whyText(e)})`);
           projLabel = suggested;
           wrote = true;
-          alert("H3 Studio: the save dialog was not available, so the project was "
-                + "downloaded as \u201c" + suggested + "\u201d to your usual "
-                + "downloads folder instead.");
         }
+      }
+      /* Download fallback: no File System Access here, or the dialog
+       * refused us. Either way the project is not lost, and it is said out
+       * loud - a silent save reads as a save that did not happen. */
+      if (!wrote) {
+        downloadInstead(blob, suggested, "project");
+        projLabel = suggested;
+        wrote = true;
       }
       /* Snapshot AFTER a write that actually happened, never after an
        * abandoned dialog. Revert then means "back to what I last saved",
@@ -8613,6 +8786,29 @@ function buildUI(node) {
     const p = proj();
     stash();
     if (!p.shots.length) { alert("H3 Studio: this project has no clips yet."); return; }
+    const stem = (p.name || "h3-project").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "h3-project";
+    /* Named .h3proj.zip rather than .h3projpack: it IS a zip, and an
+     * extension the OS recognises is one less thing to explain to whoever
+     * you hand it to. openProject still accepts the old .h3projpack. */
+    const suggested = stem + ".h3proj.zip";
+
+    /* Where to put it is asked FIRST. Packing fetches every piece of media,
+     * and by the end of that the click is long gone - Chrome then refuses
+     * the dialog and the pack could only ever be downloaded (issue 44). */
+    let handle = null;
+    if (canSavePicker()) {
+      try {
+        handle = await withPicker(() => window.showSaveFilePicker({
+          suggestedName: suggested,
+          types: [{ description: "H3 Studio project pack",
+                    accept: { "application/zip": [".zip", ".h3projpack"] } }],
+        }));
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        markPickerBroken(e, "save");
+      }
+    }
+
     busy("packing project\u2026");
     try {
       const shots = clone(p.shots);
@@ -8630,12 +8826,6 @@ function buildUI(node) {
         name: p.name || "", idx: p.idx, shots, song,
       }, null, 1)) });
 
-      const stem = (p.name || "h3-project").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") || "h3-project";
-      /* Named .h3proj.zip rather than .h3projpack: it IS a zip, and an
-       * extension the OS recognises is one less thing to explain to whoever
-       * you hand it to. openProject still accepts the old .h3projpack. */
-      const suggested = stem + ".h3proj.zip";
-
       /* The zip writer uses 32-bit offsets and sizes (no ZIP64) and stores
        * entries uncompressed, so the whole archive has to stay under 4 GB.
        * Video reference clips are packed WHOLE - trim points are metadata -
@@ -8644,6 +8834,8 @@ function buildUI(node) {
       let total = 0;
       for (const e of entries) total += e.data.length;
       if (total > 3.8e9) {
+        /* the dialog already made an empty file under that name */
+        if (handle && handle.remove) { try { await handle.remove(); } catch (_) {} }
         const gb = (total / 1e9).toFixed(1);
         alert(`H3 Studio: this project would pack to about ${gb} GB, past the 4 GB `
             + `limit of the pack format. Trim or re-encode the reference videos `
@@ -8652,33 +8844,16 @@ function buildUI(node) {
       }
       const blob = await zipWrite(entries);
 
-      let cancelled = false, noDialog = !window.showSaveFilePicker;
-      if (!noDialog) {
+      if (handle) {
         try {
-          const h = await withPicker(() => window.showSaveFilePicker({
-            suggestedName: suggested,
-            types: [{ description: "H3 Studio project pack",
-                      accept: { "application/zip": [".zip", ".h3projpack"] } }],
-          }));
-          const w = await h.createWritable();
-          await w.write(blob); await w.close();
+          await writeHandle(handle, blob);
         } catch (e) {
-          if (e && e.name === "AbortError") cancelled = true;
-          else if (pickerUnavailable(e)) {
-            console.warn("[H3 Studio] save dialog refused, downloading instead", e);
-            noDialog = true;
-          } else throw e;
+          console.warn("[H3 Studio] could not write " + handle.name + ", downloading instead", e);
+          downloadInstead(blob, suggested, "project pack",
+                          `could not write \u201c${handle.name}\u201d (${whyText(e)})`);
         }
-      }
-      if (noDialog && !cancelled) {
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = suggested;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 20000);
-        alert("H3 Studio: the save dialog was not available, so the pack was "
-              + "downloaded as \u201c" + suggested + "\u201d to your usual "
-              + "downloads folder instead.");
+      } else {
+        downloadInstead(blob, suggested, "project pack");
       }
     } catch (e) {
       alert("H3 Studio: could not pack the project \u2014 " + e);
@@ -8694,7 +8869,7 @@ function buildUI(node) {
       let d, remap = null;
 
       if (isPack) {
-        const map = await zipRead(await picked.file.arrayBuffer());
+        const map = await zipRead(await fileBytes(picked.file));
         const raw = map.get("project.json");
         if (!raw) throw new Error("pack has no project.json");
         d = JSON.parse(new TextDecoder().decode(raw));
@@ -8710,7 +8885,7 @@ function buildUI(node) {
           }
         }
       } else {
-        d = JSON.parse(await picked.file.text());
+        d = JSON.parse(await fileText(picked.file));
       }
 
       if (!d || !Array.isArray(d.shots)) throw new Error("not an H3 Studio project file");
