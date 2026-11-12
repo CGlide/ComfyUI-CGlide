@@ -9,4 +9,4 @@ Repository = "https://github.com/CGlide/ComfyUI-CGlide"
 
 [tool.comfy]
 PublisherId = "cglide"
-DisplayName = "CGlide"
+DisplayName = "CGlide"
