@@ -19,9 +19,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
+      # The registry refuses a version it already has, so a push that only
+      # fixes pyproject.toml (same version) would show up as a failed run.
+      # Publish only when the version actually changed, or when started by
+      # hand from the Actions tab.
+      - name: Did the version change?
+        id: bump
+        shell: bash
+        run: |
+          read_version() { python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])'; }
+          now="$(read_version < pyproject.toml)"
+          before="$(git show HEAD~1:pyproject.toml 2>/dev/null | read_version 2>/dev/null || true)"
+          echo "version ${before:-none} -> ${now}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${now}" != "${before}" ]; then
+            echo "publish=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            echo "Version ${now} is already published - skipping."
+          fi
       # Pinned to a released version instead of @main: an upstream change to
       # that action's main branch can otherwise break your publishing without
       # you touching anything in this repo.
-      - uses: Comfy-Org/publish-node-action@0eb6cd742945443bee7f79eeddd4f732780029a1 # v1
+      - if: steps.bump.outputs.publish == 'true'
+        uses: Comfy-Org/publish-node-action@0eb6cd742945443bee7f79eeddd4f732780029a1 # v1
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
