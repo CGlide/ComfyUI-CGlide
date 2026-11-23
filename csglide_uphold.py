@@ -24,6 +24,11 @@ import torch
 
 import comfy.nested_tensor
 
+try:
+    from .csglide_paths import PathRefused, safe_path
+except ImportError:  # loaded outside the package (tests)
+    from csglide_paths import PathRefused, safe_path
+
 LATENT_SIDECAR = ".h3latent"
 
 
@@ -70,13 +75,20 @@ class CSGlideUpscaleHold:
                    "texture jump.")
 
     def hold(self, latent, source_video, overlap_frames):
-        src = (source_video or "").strip().strip('"')
         ov = int(overlap_frames or 0)
-        if not src or ov <= 0:
+        if not (source_video or "").strip() or ov <= 0:
             return (latent,)
-
-        side = os.path.splitext(src)[0] + LATENT_SIDECAR
-        if not os.path.isfile(side):
+        # The sidecar sits next to the previous render, so the render's path is
+        # confined first (output/ or temp/, input/ for a copied clip), then the
+        # sidecar's own resolved path - a symlinked .h3latent can't lead out.
+        try:
+            src = safe_path(source_video, bases=("output", "temp", "input"), kind=None)
+            side = safe_path(os.path.splitext(src)[0] + LATENT_SIDECAR) if src else None
+        except PathRefused as e:
+            raise PathRefused("Glide Upscale Hold: %s" % e)
+        if not src:
+            return (latent,)
+        if not side:
             print("[Glide Upscale Hold] no refined tail beside %s - wire the refine "
                   "sampler's output into Glide Video's latent (save_latent = tail) "
                   "so the next clip can hold it. Passing through."

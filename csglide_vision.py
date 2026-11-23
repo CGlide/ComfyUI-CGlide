@@ -5,6 +5,8 @@ import json
 import base64
 import asyncio
 import socket
+import ssl
+import http.client
 import ipaddress
 import urllib.request
 import urllib.error
@@ -17,6 +19,11 @@ from PIL import Image, ImageOps
 
 import folder_paths
 from server import PromptServer
+
+try:
+    from .csglide_paths import PathRefused, safe_path
+except ImportError:  # loaded outside the package (tests)
+    from csglide_paths import PathRefused, safe_path
 from aiohttp import web
 
 
@@ -35,42 +42,38 @@ DEFAULT_MODEL = "llava"
 # ----------------------------------------------------------------------------
 # SSRF guard
 #
-# Every route below takes a URL from whoever called it and makes THIS machine
-# fetch it. Without a guard that is server-side request forgery: anyone who can
-# reach your ComfyUI can use it as a proxy into your own network. On a rented
-# GPU box http://169.254.169.254/ is the cloud metadata service and hands out
-# credentials; on a LAN it is a port scanner; and urllib speaks file:// as well
-# as http, so an unchecked URL reads local disk too.
+# Two kinds of outgoing request, two policies.
 #
-# Two different policies, because the two features want different things:
+#   BACKEND (analyze / models / eject / auto_eject) talks to a vision server.
+#   Which server is the OPERATOR's choice, never the caller's: a URL that
+#   arrives in a request or a widget (POST /prompt has no login) is only used
+#   when it matches the operator's configuration. Out of the box that is a
+#   local Ollama:
 #
-#   BACKEND (analyze / models / eject) -- talks to a vision server. Loopback is
-#   the normal case (Ollama, LM Studio) and a public cloud endpoint is a valid
-#   case (any OpenAI-compatible API). What it must NOT reach is the rest of the
-#   private network or the metadata service.
+#       CSGLIDE_VISION_URL   comma-separated backend base URLs.
+#                            Default: http://localhost:11434,http://127.0.0.1:11434
+#                            LM Studio:  set CSGLIDE_VISION_URL=http://localhost:1234
+#       CSGLIDE_VISION_ALLOW_HOSTS
+#                            hosts any backend URL may point at, for a vision
+#                            server on another machine or a cloud API, e.g.
+#                            192.168.1.50,ollama.lan,api.openai.com
 #
-#   IMAGE FETCH (load_url) -- pulls a picture off the public web. It has no
-#   business touching loopback or anything private at all.
+#   Both are environment variables on purpose: a value that arrives in a
+#   request is exactly what an attacker controls, so it can't be the guard.
 #
-# Running Ollama on another machine on your LAN is a real setup and it is
-# blocked by default, so there is an explicit opt-in:
-#
-#   set CSGLIDE_VISION_ALLOW_HOSTS=192.168.1.50,ollama.lan
-#
-# Hosts listed there skip the private-address check. It is deliberately an
-# environment variable and not a node widget: a value that arrives in the
-# request is exactly what an attacker controls, so it could not be a guard.
-#
-# Known limits, stated rather than hidden: the hostname is resolved and checked
-# before the request, so a DNS name that resolves differently a moment later
-# (DNS rebinding) is not covered, and redirects are re-checked per hop but the
-# final connection still goes through urllib's own resolution. Closing that
-# properly needs connecting to a pinned IP, which breaks TLS hostname
-# verification and https proxies. What is here stops the whole class of
-# one-shot attacks against a fixed internal address.
+#   IMAGE FETCH (load_url) pulls a picture off the public web. It never
+#   touches loopback or a private address. The check is done at CONNECT
+#   time: the connection resolves the host once, refuses the whole host if
+#   any address is internal, and connects to the address that passed. A DNS
+#   name that answers differently a moment later (DNS rebinding) gets nothing,
+#   because no second lookup happens. HTTPS still verifies the certificate
+#   against the host name. Redirects and the og:image URL go through the same
+#   connection, so every hop is checked the same way. This fetch does not go
+#   through a system HTTP proxy: a proxy would do its own lookup.
 # ----------------------------------------------------------------------------
 ALLOWED_SCHEMES = ("http", "https")
 MAX_FETCH_BYTES = 32 * 1024 * 1024          # a picture, not a disk image
+DEFAULT_BACKENDS = "http://localhost:11434,http://127.0.0.1:11434"
 
 
 class UrlNotAllowed(RuntimeError):
@@ -82,6 +85,53 @@ def _extra_allowed_hosts():
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
+def _url_key(url):
+    """(scheme, host, port, path) for comparing URLs, or None if not http(s)."""
+    try:
+        parts = urlsplit((url or "").strip())
+        scheme = (parts.scheme or "").lower()
+        host = (parts.hostname or "").lower()
+        port = parts.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        return None
+    if scheme not in ALLOWED_SCHEMES or not host:
+        return None
+    return scheme, host, port, (parts.path or "").rstrip("/")
+
+
+def configured_backends():
+    raw = os.environ.get("CSGLIDE_VISION_URL", "") or DEFAULT_BACKENDS
+    return [u.strip().rstrip("/") for u in raw.split(",") if _url_key(u.strip())]
+
+
+def backend_url(url):
+    """The backend base URL to use. Empty -> the first configured one. A
+    supplied URL is accepted only when it is one of the configured backends,
+    or its host is in CSGLIDE_VISION_ALLOW_HOSTS. Raises UrlNotAllowed."""
+    url = (url or "").strip().rstrip("/")
+    allowed = configured_backends()
+    if not url:
+        if not allowed:
+            raise UrlNotAllowed("No vision server is configured (CSGLIDE_VISION_URL).")
+        return allowed[0]
+    key = _url_key(url)
+    if key is None:
+        raise UrlNotAllowed("Only http and https URLs are allowed.")
+    if parse_qs_present(url):
+        raise UrlNotAllowed("The vision server URL can't carry a query or fragment.")
+    if key in {_url_key(u) for u in allowed} or key[1] in _extra_allowed_hosts():
+        return url
+    raise UrlNotAllowed(
+        "'%s' is not a configured vision server. Set CSGLIDE_VISION_URL=%s "
+        "(or add its host to CSGLIDE_VISION_ALLOW_HOSTS) and restart ComfyUI."
+        % (url, url))
+
+
+def parse_qs_present(url):
+    parts = urlsplit(url)
+    return bool(parts.query or parts.fragment or parts.username or parts.password)
+
+
 def _is_internal(ip):
     """True for anything that is not a normal public address."""
     if ip.version == 6:
@@ -91,6 +141,7 @@ def _is_internal(ip):
     return bool(
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        or not ip.is_global
     )
 
 
@@ -102,7 +153,7 @@ def _resolve(host, port):
     out = []
     for info in infos:
         try:
-            out.append(ipaddress.ip_address(info[4][0]))
+            out.append(ipaddress.ip_address(info[4][0].split("%")[0]))
         except ValueError:
             continue
     if not out:
@@ -110,61 +161,109 @@ def _resolve(host, port):
     return out
 
 
-def check_url(url, allow_loopback):
-    """Raise UrlNotAllowed unless this URL is safe to fetch. Returns the url."""
-    parts = urlsplit(url or "")
-    scheme = (parts.scheme or "").lower()
-    if scheme not in ALLOWED_SCHEMES:
-        raise UrlNotAllowed(
-            "Only http and https URLs are allowed (got '%s')." % (scheme or "none")
-        )
-    host = (parts.hostname or "").lower()
-    if not host:
-        raise UrlNotAllowed("That URL has no host in it.")
-
+def public_address(host, port):
+    """Resolve once and return the address to connect to. Every address the
+    name has must be public, or the host is refused."""
+    host = (host or "").lower()
+    ips = _resolve(host, port)
     if host in _extra_allowed_hosts():
-        return url                      # explicit opt-in by whoever runs the server
-
-    port = parts.port or (443 if scheme == "https" else 80)
-    for ip in _resolve(host, port):
-        if ip.is_loopback:
-            if allow_loopback:
-                continue
-            raise UrlNotAllowed(
-                "This one only fetches from the public web, not from this machine."
-            )
+        return ips[0]                   # explicit opt-in by whoever runs the server
+    for ip in ips:
         if _is_internal(ip):
             raise UrlNotAllowed(
-                "'%s' is a private or internal address, so it is blocked. If it is "
-                "your own vision server, add its host to CSGLIDE_VISION_ALLOW_HOSTS "
-                "and restart ComfyUI." % host
-            )
+                "'%s' is a private, internal or local address, so it is blocked. "
+                "This loader only fetches from the public web." % host)
+    return ips[0]
+
+
+def check_public_url(url):
+    """Scheme/host check plus an early resolve, so a refused URL says why
+    instead of timing out. The binding check is the one at connect time."""
+    key = _url_key(url)
+    if key is None:
+        raise UrlNotAllowed("Only http and https URLs are allowed.")
+    public_address(key[1], key[2])
     return url
 
 
-class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
-    """A public URL that 302s to 169.254.169.254 would walk straight past a
-    check done only on the URL you typed, so every hop gets checked too."""
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        ip = public_address(self.host, self.port)
+        self.sock = socket.create_connection(
+            (str(ip), self.port), self.timeout, self.source_address)
 
-    def __init__(self, allow_loopback):
-        self.allow_loopback = allow_loopback
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        ip = public_address(self.host, self.port)
+        sock = socket.create_connection(
+            (str(ip), self.port), self.timeout, self.source_address)
+        # Certificate checked against the NAME, connection made to the address
+        # that passed: TLS stays verified and no second lookup happens.
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self):
+        super().__init__(context=ssl.create_default_context())
+
+    def https_open(self, req):
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+
+class _CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    """Each hop is checked. For the public fetch the connection itself checks
+    again; for a backend, a redirect has to stay on a configured server."""
+
+    def __init__(self, check):
+        self.check = check
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        check_url(newurl, self.allow_loopback)
+        self.check(newurl)
         return urllib.request.HTTPRedirectHandler.redirect_request(
             self, req, fp, code, msg, headers, newurl
         )
 
 
-def _opener(allow_loopback):
-    return urllib.request.build_opener(_GuardedRedirects(allow_loopback))
-
-
-def guarded_open(req, timeout, allow_loopback):
-    """urlopen, with the URL and every redirect checked first."""
+def public_open(req, timeout):
+    """urlopen for the public web, pinned to a checked address, no proxy."""
     url = req.full_url if isinstance(req, urllib.request.Request) else req
-    check_url(url, allow_loopback)
-    return _opener(allow_loopback).open(req, timeout=timeout)
+    check_public_url(url)
+    opener = urllib.request.OpenerDirector()
+    for h in (urllib.request.ProxyHandler({}), _PinnedHTTPHandler(),
+              _PinnedHTTPSHandler(), _CheckedRedirects(check_public_url),
+              urllib.request.HTTPDefaultErrorHandler(),
+              urllib.request.HTTPErrorProcessor()):
+        opener.add_handler(h)
+    return opener.open(req, timeout=timeout)
+
+
+def _check_backend_hop(url):
+    """A request or redirect target for a backend call: it has to be on one
+    of the configured servers (same scheme, host and port) or on an allowed
+    host. Raises UrlNotAllowed."""
+    key = _url_key(url)
+    if key is None:
+        raise UrlNotAllowed("Only http and https URLs are allowed.")
+    origins = {_url_key(u)[:3] for u in configured_backends()}
+    if key[:3] in origins or key[1] in _extra_allowed_hosts():
+        return url
+    raise UrlNotAllowed("The vision server redirected to '%s', which is not a "
+                        "configured server." % key[1])
+
+
+def backend_open(req, timeout):
+    """urlopen for a configured vision server. The request URL has already
+    been built from backend_url(); the redirect handler keeps it there."""
+    url = req.full_url if isinstance(req, urllib.request.Request) else req
+    _check_backend_hop(url)
+    opener = urllib.request.build_opener(_CheckedRedirects(_check_backend_hop))
+    return opener.open(req, timeout=timeout)
 
 
 def _read_capped(resp):
@@ -197,18 +296,23 @@ def pil_to_tensor(img):
     return torch.from_numpy(arr)[None,]  # (1, H, W, 3)
 
 
+_ANNOTATED = re.compile(r"^(.*) \[(input|output|temp)\]$")
+
+
 def load_image_from_input(name):
+    """An image by name, from ComfyUI's input folder ("pic.png") or from the
+    folder its annotation names ("pic.png [output]"). Anything that would leave
+    input/output/temp raises PathRefused; a name that is fine but missing
+    returns None."""
     name = (name or "").strip()
     if not name:
         return None
-    input_dir = folder_paths.get_input_directory()
-    path = os.path.join(input_dir, name)
-    if not os.path.exists(path):
-        try:
-            path = folder_paths.get_annotated_filepath(name)
-        except Exception:
-            return None
-    if not os.path.exists(path):
+    m = _ANNOTATED.match(name)
+    if m:
+        path = safe_path(m.group(1), bases=(m.group(2),))
+    else:
+        path = safe_path(name, bases=("input",))
+    if path is None:
         return None
     img = Image.open(path)
     img = ImageOps.exif_transpose(img)
@@ -231,7 +335,7 @@ def _call_ollama(url, model, prompt, image_b64):
         endpoint, data=data, headers={"Content-Type": "application/json"}
     )
     try:
-        with guarded_open(req, 600, allow_loopback=True) as resp:
+        with backend_open(req, 600) as resp:
             out = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as he:
         # Only quote the response body back when it came from this machine.
@@ -279,7 +383,7 @@ def _call_openai(url, model, prompt, image_b64, api_key=""):
         headers["Authorization"] = f"Bearer {api_key}"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(endpoint, data=data, headers=headers)
-    with guarded_open(req, 600, allow_loopback=True) as resp:
+    with backend_open(req, 600) as resp:
         out = json.loads(resp.read().decode("utf-8"))
     return (out["choices"][0]["message"]["content"] or "").strip()
 
@@ -287,7 +391,7 @@ def _call_openai(url, model, prompt, image_b64, api_key=""):
 def run_analysis(image_b64, prompt, backend, url, model, api_key=""):
     prompt = (prompt or "").strip() or DEFAULT_PROMPT
     backend = (backend or "ollama").lower()
-    url = (url or DEFAULT_URL).strip()
+    url = backend_url(url)
     model = (model or DEFAULT_MODEL).strip()
     if backend == "openai":
         return _call_openai(url, model, prompt, image_b64, api_key)
@@ -304,7 +408,7 @@ def _err(e, where):
     """One error shape for the routes. UrlNotAllowed is written to be read by
     the user; anything else gets logged here and summarised there, so a stack
     trace or a fetched response body never travels back over the wire."""
-    if isinstance(e, (UrlNotAllowed, RuntimeError)):
+    if isinstance(e, (UrlNotAllowed, PathRefused, RuntimeError)):
         return str(e)
     print("[Glide Vision] %s failed: %r" % (where, e))
     return "That didn't work - see the ComfyUI console for the details."
@@ -333,7 +437,7 @@ async def _analyze(request):
             image_b64,
             data.get("prompt", ""),
             data.get("backend", "ollama"),
-            data.get("url", DEFAULT_URL),
+            data.get("url", ""),
             data.get("model", DEFAULT_MODEL),
             data.get("api_key", ""),
         )
@@ -363,9 +467,9 @@ def _fetch_url_bytes(url, referer=None):
     headers = dict(_BROWSER_HEADERS)
     headers["Referer"] = referer or _origin(url) or ""
     req = urllib.request.Request(url, headers=headers)
-    # allow_loopback=False: this is the public-web fetcher. Nothing about
-    # loading a reference picture needs to reach this machine.
-    with guarded_open(req, 60, allow_loopback=False) as r:
+    # The public-web fetcher: pinned to a checked public address. Nothing
+    # about loading a reference picture needs to reach this machine or the LAN.
+    with public_open(req, 60) as r:
         ctype = r.headers.get("Content-Type", "") or ""
         return _read_capped(r), ctype
 
@@ -393,7 +497,7 @@ async def _load_url(request):
             return web.json_response({"ok": False, "error": "Empty URL."}, status=200)
 
         # Fail before fetching, so a refused URL says why instead of timing out.
-        check_url(url, allow_loopback=False)
+        check_public_url(url)
 
         loop = asyncio.get_event_loop()
         ref = "https://www.pinterest.com/" if "pin" in url.lower() else None
@@ -409,7 +513,7 @@ async def _load_url(request):
 
         # got a web page instead of an image -> dig out the real image URL.
         # The og:image URL comes off a fetched page, so it is no more trusted
-        # than the one that was typed in; guarded_open checks it as well.
+        # than the one that was typed in; public_open checks it the same way.
         if img is None:
             og = None
             try:
@@ -446,16 +550,15 @@ async def _load_url(request):
 
 @routes.get("/csglide_vision/models")
 async def _models(request):
-    url = request.query.get("url", DEFAULT_URL)
-
-    def _tags():
-        endpoint = url.rstrip("/") + "/api/tags"
-        req = urllib.request.Request(endpoint)
-        with guarded_open(req, 15, allow_loopback=True) as r:
-            return json.loads(_read_capped(r).decode("utf-8"))
-
     try:
-        check_url(url, allow_loopback=True)
+        url = backend_url(request.query.get("url", ""))
+
+        def _tags():
+            endpoint = url + "/api/tags"
+            req = urllib.request.Request(endpoint)
+            with backend_open(req, 15) as r:
+                return json.loads(_read_capped(r).decode("utf-8"))
+
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(None, _tags)
         names = [m.get("name", "") for m in data.get("models", [])]
@@ -475,18 +578,17 @@ async def _eject(request):
             return web.json_response(
                 {"ok": True, "msg": "Eject only applies to Ollama."}
             )
-        url = (data.get("url") or DEFAULT_URL).strip()
+        url = backend_url(data.get("url") or "")
         model = (data.get("model") or DEFAULT_MODEL).strip()
-        check_url(url, allow_loopback=True)
 
         def _unload():
-            endpoint = url.rstrip("/") + "/api/generate"
+            endpoint = url + "/api/generate"
             payload = {"model": model, "keep_alive": 0}
             body = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
                 endpoint, data=body, headers={"Content-Type": "application/json"}
             )
-            with guarded_open(req, 60, allow_loopback=True) as r:
+            with backend_open(req, 60) as r:
                 return _read_capped(r)
 
         loop = asyncio.get_event_loop()
@@ -522,14 +624,14 @@ class CSGlideVision:
     def execute(self, image_name, custom_prompt, description, backend, server_url, model, auto_eject=False):
         if auto_eject and (backend or "").lower() == "ollama":
             try:
-                endpoint = (server_url or DEFAULT_URL).rstrip("/") + "/api/generate"
+                endpoint = backend_url(server_url) + "/api/generate"
                 body = json.dumps(
                     {"model": (model or DEFAULT_MODEL), "keep_alive": 0}
                 ).encode("utf-8")
                 req = urllib.request.Request(
                     endpoint, data=body, headers={"Content-Type": "application/json"}
                 )
-                with guarded_open(req, 60, allow_loopback=True) as r:
+                with backend_open(req, 60) as r:
                     r.read(1024)
             except UrlNotAllowed as e:
                 print("[Glide Vision] auto_eject skipped: %s" % e)

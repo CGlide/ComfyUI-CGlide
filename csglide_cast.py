@@ -23,6 +23,11 @@ import torch
 from PIL import Image, ImageOps
 
 import folder_paths
+
+try:
+    from .csglide_paths import PathRefused, clean_text, is_absolute_text, safe_path
+except ImportError:  # loaded outside the package (tests)
+    from csglide_paths import PathRefused, clean_text, is_absolute_text, safe_path
 import nodes
 import comfy.model_management
 import comfy.nested_tensor
@@ -160,17 +165,25 @@ def _empty_av_latent(width, height, length, batch_size=1):
 # --------------------------------------------------------------------------
 
 def _resolve_asset(ref):
-    """Find an uploaded asset. Tries the ref as given, then each asset folder."""
+    """Find an uploaded asset. Tries the ref as given, then each asset folder,
+    all inside input/. A ref that points outside ComfyUI's folders (absolute,
+    UNC, '..', a symlink out) raises PathRefused before the disk is touched."""
     if not ref:
         return None
-    root = folder_paths.get_input_directory()
-    candidates = [os.path.join(root, ref)]
-    base = os.path.basename(ref)
-    for sub in (ASSET_SUBFOLDER,) + LEGACY_ASSET_SUBFOLDERS:
-        candidates.append(os.path.join(root, sub, base))
-    candidates.append(os.path.join(root, base))
-    for path in candidates:
-        if path and os.path.isfile(path):
+    ref = clean_text(ref)
+    if not ref:
+        return None
+    if is_absolute_text(ref):
+        # Only a full path that already sits inside input/output/temp, as
+        # H3 Studio's own source_video output is.
+        return safe_path(ref)
+    path = safe_path(ref, bases=("input",))
+    if path:
+        return path
+    base = os.path.basename(ref.replace("\\", "/"))
+    for sub in (ASSET_SUBFOLDER,) + LEGACY_ASSET_SUBFOLDERS + ("",):
+        path = safe_path(os.path.join(sub, base) if sub else base, bases=("input",))
+        if path:
             return path
     return None
 
@@ -1547,6 +1560,8 @@ try:
             # that is indistinguishable from a hung render.
             loop = asyncio.get_running_loop()
             got = await loop.run_in_executor(None, pick_reference_span_cached, ref)
+        except PathRefused as exc:
+            return _web.json_response({"error": str(exc)}, status=403)
         except Exception as exc:
             return _web.json_response({"error": str(exc)}, status=500)
         if got is None:

@@ -33,6 +33,11 @@ import numpy as np
 import torch
 
 try:
+    from .csglide_paths import PathRefused, safe_path
+except ImportError:  # loaded outside the package (tests)
+    from csglide_paths import PathRefused, safe_path
+
+try:
     import av
 except Exception:  # pragma: no cover
     av = None
@@ -55,13 +60,19 @@ ALIGN_SEARCH = 2       # frames either way when checking correspondence
 # --------------------------------------------------------------------------
 
 def _open_source(path):
+    """The clip to continue from, inside ComfyUI's output, input or temp
+    folder only. H3 Studio's source_video is a full path inside one of them;
+    a typed name is looked up in output/ first, then input/."""
     if av is None:
         raise RuntimeError("Glide Join: PyAV is required to read the source clip.")
-    p = (path or "").strip().strip('"').strip("'")
-    if not p or not os.path.isfile(p):
+    try:
+        p = safe_path(path, bases=("output", "input", "temp"))
+    except PathRefused as e:
+        raise PathRefused("Glide Join: %s" % e)
+    if not p:
         raise FileNotFoundError(
             "Glide Join: source clip not found: %r. Wire H3 Studio's source_video "
-            "output, or give a full path." % path)
+            "output, or give a file inside ComfyUI's output or input folder." % path)
     return p
 
 

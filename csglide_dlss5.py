@@ -33,6 +33,11 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    from .csglide_paths import safe_path, safe_subdir
+except ImportError:  # loaded outside the package (tests)
+    from csglide_paths import safe_path, safe_subdir
+
 import folder_paths
 
 try:
@@ -108,39 +113,26 @@ def _choices(attr: str, fallback: list[str]) -> list[str]:
 
 # ---------------------------------------------------------------- sources
 
-def _allowed_roots() -> list[Path]:
-    return [Path(folder_paths.get_input_directory()).resolve(),
-            Path(folder_paths.get_output_directory()).resolve(),
-            Path(folder_paths.get_temp_directory()).resolve()]
-
-
-def _resolve_source(value: str, confine: bool = True) -> Path:
+def _resolve_source(value: str) -> Path:
     """A video inside ComfyUI's input, output or temp folder - nowhere else.
 
-    The routes below take this value straight from an HTTP request, so it is
-    confined the same way the pack's other file routes are: relative names
-    live in the input folder, absolute paths are accepted only when they
-    resolve (symlinks and '..' included) inside one of ComfyUI's own folders.
-    A dropped file lands in input/glide_dlss5; a render of yours is already
-    in output. Anything else on the disk is refused, not read."""
-    raw = str(value or "").strip().strip('"').strip("'")
-    if not raw:
+    The routes take this value straight from an HTTP request, and the node
+    takes it from a widget that POST /prompt sets without a login, so both are
+    confined the same way: relative names live in the input folder, a full
+    path is accepted only when it spells out a place inside input, output or
+    temp and still resolves there (symlinks included). UNC and '..' paths are
+    refused by their text, before any filesystem call. A dropped file lands
+    in input/glide_dlss5; a render of yours is already in output."""
+    if not str(value or "").strip():
         raise ValueError("No video yet. Drop a video file on the node.")
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = Path(folder_paths.get_input_directory()) / raw
-    candidate = candidate.resolve()
-    # Confined only for the HTTP routes (preview, scrub frames, info), where the
-    # path comes from a request. A queued render runs the user's own graph,
-    # like any Load Video node, so a full path anywhere on disk is fine there.
-    if confine and not any(candidate.is_relative_to(root) for root in _allowed_roots()):
-        raise ValueError("The preview only reads videos inside ComfyUI's input, "
-                         "output or temp folders - drop the file on the node to "
-                         "preview it. Queueing a render works from any folder.")
+    found = safe_path(value, bases=("input",), kind=None)
+    if found is None:
+        raise ValueError("No video yet. Drop a video file on the node.")
+    candidate = Path(found)
     if candidate.suffix.lower() not in VIDEO_EXTS:
         raise ValueError(f"{candidate.name} is not a video file this node reads.")
     if not candidate.is_file():
-        raise FileNotFoundError(f"No video file at {candidate}")
+        raise FileNotFoundError(f"No video file named {candidate.name} in ComfyUI's folders.")
     return candidate
 
 
@@ -486,7 +478,7 @@ class CSGlideDLSS5:
                                            "tooltip": "Frames rendered up to the playhead for a preview. DLSS builds up over frames; 8 is a fair look."}),
             },
             "optional": {
-                "output_directory": ("STRING", {"default": "", "tooltip": "Empty = ComfyUI output folder."}),
+                "output_directory": ("STRING", {"default": "", "tooltip": "A folder inside ComfyUI's output folder: Upscaled means output/Upscaled. Empty = the output folder."}),
                 "name_from_source": ("BOOLEAN", {"default": True,
                                      "tooltip": "On: the output keeps the source video's name, with filename_prefix added as a suffix "
                                                 "(01_shot_00001.mp4 -> 01_shot_00001_DLSS5.mkv). Off: prefix + timestamp, as before."}),
@@ -502,19 +494,19 @@ class CSGlideDLSS5:
     @classmethod
     def IS_CHANGED(cls, video="", **kwargs):
         try:
-            status = _resolve_source(video, confine=False).stat()
+            status = _resolve_source(video).stat()
             return f"{status.st_mtime_ns}:{status.st_size}"
         except Exception:
             return float("nan")
 
     def render(self, settings, video, codec, container, quality, filename_prefix,
                copy_audio, preview_frames, output_directory="", name_from_source=True):
-        source = _resolve_source(video, confine=False)
+        source = _resolve_source(video)
         node = _Engine.mod("nodes.enhance_video").DLSS5EnhanceVideoFile
         out = node.execute(
             video_path=str(source), settings=settings, codec=codec, container=container,
             quality=quality, filename_prefix=filename_prefix,
-            output_directory=output_directory or "", max_frames=0,
+            output_directory=str(_out_dir(output_directory)), max_frames=0,
             copy_audio=bool(copy_audio), verify_neural_rendering=True,
         )
         values = getattr(out, "result", None) or getattr(out, "args", None) or out
@@ -529,19 +521,31 @@ class CSGlideDLSS5:
 
 def _resolve_folder(value: str) -> Path:
     """The batch folder. Relative names live in the output folder, where renders
-    are (so "Static" means output/Static); a full path can be anywhere - this
-    only runs from the queue, on the user's own graph, never from a request."""
-    raw = str(value or "").strip().strip('"').strip("'")
-    if not raw:
+    are (so "Static" means output/Static); a full path has to be inside
+    ComfyUI's input, output or temp folder."""
+    if not str(value or "").strip():
         raise ValueError("Type the folder that holds your clips, e.g. Static "
-                         "(inside ComfyUI's output folder) or its full path.")
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = Path(folder_paths.get_output_directory()) / raw
-    candidate = candidate.resolve()
-    if not candidate.is_dir():
-        raise FileNotFoundError(f"No folder at {candidate}")
-    return candidate
+                         "(inside ComfyUI's output folder).")
+    found = safe_path(value, bases=("output", "input"), kind="dir")
+    if found is None:
+        raise FileNotFoundError(f"No folder named {str(value).strip()} in ComfyUI's output folder.")
+    return Path(found)
+
+
+def _out_dir(value: str, default_under: Path | None = None) -> Path:
+    """Where a render is written: always inside ComfyUI's output folder.
+    A name like Upscaled means output/Upscaled. Empty -> default_under when
+    that is inside output, else output itself (or output/DLSS5 for a batch)."""
+    if (value or "").strip():
+        return Path(safe_subdir(value, "output"))
+    out_root = Path(folder_paths.get_output_directory()).resolve()
+    if default_under is not None:
+        try:
+            rel = default_under.resolve().relative_to(out_root)
+        except ValueError:
+            rel = Path()
+        return Path(safe_subdir(str(rel / "DLSS5"), "output"))
+    return Path(safe_subdir("", "output"))
 
 
 def _is_our_output(stem: str, tag: str) -> bool:
@@ -567,7 +571,7 @@ class CSGlideDLSS5Batch:
                 "settings": ("DLSS5_SETTINGS", {"tooltip": "Connect a DLSS5 Settings node."}),
                 "folder": ("STRING", {"default": "",
                            "tooltip": "Folder with your clips. A name like Static means output/Static; "
-                                      "a full path works if it is inside ComfyUI's input, output or temp folder."}),
+                                      "a full path works only if it is inside ComfyUI's input, output or temp folder."}),
                 "codec": (_choices("CODECS", ["HEVC", "H.264", "AV1", "ProRes Proxy"]), {"default": "HEVC"}),
                 "container": (_choices("CONTAINERS", ["MKV", "MP4", "MOV"]), {"default": "MKV"}),
                 "quality": (_choices("QUALITIES", ["Auto", "Good", "Best", "Max"]), {"default": "Auto"}),
@@ -579,7 +583,8 @@ class CSGlideDLSS5Batch:
             },
             "optional": {
                 "output_directory": ("STRING", {"default": "",
-                                     "tooltip": "Empty = a DLSS5 folder inside the clips folder (e.g. output/Static/DLSS5)."}),
+                                     "tooltip": "A folder inside ComfyUI's output folder (Upscaled = output/Upscaled). "
+                                                "Empty = a DLSS5 folder inside the clips folder (e.g. output/Static/DLSS5)."}),
                 "name_filter": ("STRING", {"default": "",
                                 "tooltip": "Only files whose name contains this text. Empty = every video in the folder."}),
             },
@@ -602,9 +607,7 @@ class CSGlideDLSS5Batch:
 
         src_dir = _resolve_folder(folder)
         tag = "".join(c for c in (suffix or "").strip() if c not in '<>:"/\\|?*')
-        out_dir = Path(output_directory.strip().strip('"')) if (output_directory or "").strip() \
-            else src_dir / "DLSS5"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = _out_dir(output_directory, default_under=src_dir)
         ext = "." + str(container).lower()
 
         needle = (name_filter or "").strip().lower()
