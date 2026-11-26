@@ -1,8 +1,8 @@
 {
  "id": "8eb10ff1-da5d-4206-8804-5d4786723a2a",
  "revision": 0,
- "last_node_id": 247,
- "last_link_id": 523,
+ "last_node_id": 250,
+ "last_link_id": 528,
  "nodes": [
   {
    "id": 116,
@@ -263,7 +263,7 @@
    "flags": {
     "collapsed": true
    },
-   "order": 22,
+   "order": 24,
    "mode": 0,
    "inputs": [
     {
@@ -363,8 +363,8 @@
    "id": 123,
    "type": "KSamplerSelect",
    "pos": [
-    -340.2472829147655,
-    4681.342781900011
+    -167.33820077951162,
+    4643.687637562184
    ],
    "size": [
     224.9909772194365,
@@ -420,7 +420,7 @@
    "flags": {
     "collapsed": true
    },
-   "order": 13,
+   "order": 14,
    "mode": 0,
    "inputs": [
     {
@@ -486,7 +486,7 @@
    "flags": {
     "collapsed": false
    },
-   "order": 11,
+   "order": 12,
    "mode": 0,
    "inputs": [
     {
@@ -767,10 +767,11 @@
        "colour": "",
        "link": false,
        "lastOut": {
-        "name": "MiniMax_H3_derope_00015.mp4",
-        "subfolder": "video",
+        "name": "03_fight2_00026.mp4",
+        "subfolder": "cyber5motor",
         "type": "output",
-        "t": 1795660772293
+        "t": 1795664331571,
+        "pick": true
        },
        "state": {
         "mode": "ref2va",
@@ -822,6 +823,12 @@
         "subfolder": "cyber5motor",
         "type": "output",
         "t": 1794963072881
+       },
+       "lastDerope": {
+        "name": "03_fight2_derope_00003.mp4",
+        "subfolder": "cyber5motor",
+        "type": "output",
+        "t": 1795667026602
        }
       }
      ],
@@ -1036,14 +1043,15 @@
     "gcast_prompt_big": false,
     "gcast_run_scope": "chain",
     "gcast_run_look": false,
-    "gcast_upscale": false
+    "gcast_upscale": false,
+    "gcast_derope": true
    },
    "widgets_values": [
-    "{\"mode\":\"ref2va\",\"width\":1344,\"height\":768,\"length\":294,\"ref_image_size\":\"match\",\"ref_refine_scale\":1.5,\"up_width\":0,\"up_height\":0,\"pace\":2.5,\"prompt\":\"subject_definitions:\\n@image1 is the man in the tuxedo.\\n@image2 is the tattooed man in the grey top and cargo pants.\\n@image3 is the location: a ruined, flooded city street lined with wrecked rusted cars.\\n\\nsummary:\\n[reference generation] @image1 fights @image2 beside a wrecked sedan on the ruined street of @image3.\\n\\ndetailed_description:\\nprfight2, prfin1. Gritty practical action film, real-time speed with no slow motion, handheld camera close to the fighters, hard cuts landing on the impacts, desaturated daylight with cool cyan shadows. The layout is the same in every shot: @image1 and @image2 stand face to face in the middle of the ruined street of @image3, a wrecked rusted sedan right beside them, the wide puddle at their feet, collapsed buildings and hanging cables beyond. Exactly two people in frame throughout; no on-screen text.\\n\\n[Shot 1] Tight handheld two-shot. @image2 steps into @image1's face and jabs a finger into his chest. @image2 (S1), low and threatening, says in English: \\\"Wrong street, pretty boy.\\\" His lips close right after the last word. @image1 stands completely still, lips pressed closed, and stares back.\\n\\n[Shot 2] At 00:02.500, hard cut to a medium shot. Without warning @image1 snaps a short right elbow into @image2's jaw; his head whips sideways and he staggers back against the sedan. He comes off it swinging a wild overhand right; @image1 parries it with his left forearm, traps the arm and drives a short hook and an uppercut into his ribs and chin.\\n\\n[Shot 3] At 00:06.000, hard cut to a low angle wide shot. @image1 fires a snapping front kick into @image2's chest that sends him stumbling backward into the puddle, water spraying up to his knees. @image2 lunges back in; @image1 catches him by the back of the neck and drags him two steps to the sedan's driver door.\\n\\n[Shot 4] At 00:09.000, hard cut to a tight handheld shot at the driver door. @image1 slams @image2's head into the side window and the glass shatters into a spray of pieces. He hauls him back and throws him over his hip; @image2 lands flat on his back in the wet rubble and stays there, motionless. @image1 straightens his jacket and stands over him, breathing hard.\\n\\nThroughout the whole video @image1 never speaks and keeps his lips closed; after his one line @image2 makes only grunts and sharp breaths, no words.\\n\\noverall_soundscape: Wind moving through the ruins, loose cables creaking and water dripping run under the whole video. Every body hit lands as a deep bass thud, the sedan's panels boom and rattle when he is thrown against it, the puddle splashes hard, and the side window bursts with a crunch of safety glass tinkling onto the ground. The only voices are the single line and the men's sharp breaths and short grunts, no other words. In the last seconds glass pieces settle on the rubble under heavy breathing and the wind.\\n\\nnon_diegetic_music: N/A\",\"audio_mode\":\"ref\",\"slots\":{\"first\":{},\"last\":{},\"images\":[{\"file\":\"cglide/glidepicture_1785433153283.png\"},{\"file\":\"cglide/glidepicture_1794959958967.png\"},{\"file\":\"cglide/Dystopische Zerst\u00f6rung.jfif\"},{},{},{},{},{},{}],\"videos\":[{},{},{}],\"audios\":[{},{},{}]},\"cont\":{},\"clip\":{\"name\":\"fight2\",\"index\":3,\"count\":3,\"project\":\"cyber5motor\"},\"song\":null,\"cont_latent\":true,\"upscale\":null,\"save_latent\":\"full\"}",
+    "{\"mode\":\"ref2va\",\"width\":1344,\"height\":768,\"length\":294,\"ref_image_size\":\"match\",\"ref_refine_scale\":1.5,\"up_width\":0,\"up_height\":0,\"pace\":2.5,\"prompt\":\"subject_definitions:\\n@image1 is the man in the tuxedo.\\n@image2 is the tattooed man in the grey top and cargo pants.\\n@image3 is the location: a ruined, flooded city street lined with wrecked rusted cars.\\n\\nsummary:\\n[reference generation] @image1 fights @image2 beside a wrecked sedan on the ruined street of @image3.\\n\\ndetailed_description:\\nprfight2, prfin1. Gritty practical action film, real-time speed with no slow motion, handheld camera close to the fighters, hard cuts landing on the impacts, desaturated daylight with cool cyan shadows. The layout is the same in every shot: @image1 and @image2 stand face to face in the middle of the ruined street of @image3, a wrecked rusted sedan right beside them, the wide puddle at their feet, collapsed buildings and hanging cables beyond. Exactly two people in frame throughout; no on-screen text.\\n\\n[Shot 1] Tight handheld two-shot. @image2 steps into @image1's face and jabs a finger into his chest. @image2 (S1), low and threatening, says in English: \\\"Wrong street, pretty boy.\\\" His lips close right after the last word. @image1 stands completely still, lips pressed closed, and stares back.\\n\\n[Shot 2] At 00:02.500, hard cut to a medium shot. Without warning @image1 snaps a short right elbow into @image2's jaw; his head whips sideways and he staggers back against the sedan. He comes off it swinging a wild overhand right; @image1 parries it with his left forearm, traps the arm and drives a short hook and an uppercut into his ribs and chin.\\n\\n[Shot 3] At 00:06.000, hard cut to a low angle wide shot. @image1 fires a snapping front kick into @image2's chest that sends him stumbling backward into the puddle, water spraying up to his knees. @image2 lunges back in; @image1 catches him by the back of the neck and drags him two steps to the sedan's driver door.\\n\\n[Shot 4] At 00:09.000, hard cut to a tight handheld shot at the driver door. @image1 slams @image2's head into the side window and the glass shatters into a spray of pieces. He hauls him back and throws him over his hip; @image2 lands flat on his back in the wet rubble and stays there, motionless. @image1 straightens his jacket and stands over him, breathing hard.\\n\\nThroughout the whole video @image1 never speaks and keeps his lips closed; after his one line @image2 makes only grunts and sharp breaths, no words.\\n\\noverall_soundscape: Wind moving through the ruins, loose cables creaking and water dripping run under the whole video. Every body hit lands as a deep bass thud, the sedan's panels boom and rattle when he is thrown against it, the puddle splashes hard, and the side window bursts with a crunch of safety glass tinkling onto the ground. The only voices are the single line and the men's sharp breaths and short grunts, no other words. In the last seconds glass pieces settle on the rubble under heavy breathing and the wind.\\n\\nnon_diegetic_music: N/A\",\"audio_mode\":\"ref\",\"slots\":{\"first\":{},\"last\":{},\"images\":[{\"file\":\"cglide/glidepicture_1785433153283.png\"},{\"file\":\"cglide/glidepicture_1794959958967.png\"},{\"file\":\"cglide/Dystopische Zerst\u00f6rung.jfif\"},{},{},{},{},{},{}],\"videos\":[{},{},{}],\"audios\":[{},{},{}]},\"cont\":{},\"clip\":{\"name\":\"fight2\",\"index\":3,\"count\":3,\"project\":\"cyber5motor\"},\"song\":null,\"cont_latent\":true,\"upscale\":null,\"derope\":{\"src\":{\"name\":\"03_fight2_00026.mp4\",\"subfolder\":\"cyber5motor\",\"type\":\"output\"}},\"save_latent\":\"full\"}",
     ""
    ],
    "widgets_values_named": {
-    "h3_data": "{\"mode\":\"ref2va\",\"width\":1344,\"height\":768,\"length\":294,\"ref_image_size\":\"match\",\"ref_refine_scale\":1.5,\"up_width\":0,\"up_height\":0,\"pace\":2.5,\"prompt\":\"subject_definitions:\\n@image1 is the man in the tuxedo.\\n@image2 is the tattooed man in the grey top and cargo pants.\\n@image3 is the location: a ruined, flooded city street lined with wrecked rusted cars.\\n\\nsummary:\\n[reference generation] @image1 fights @image2 beside a wrecked sedan on the ruined street of @image3.\\n\\ndetailed_description:\\nprfight2, prfin1. Gritty practical action film, real-time speed with no slow motion, handheld camera close to the fighters, hard cuts landing on the impacts, desaturated daylight with cool cyan shadows. The layout is the same in every shot: @image1 and @image2 stand face to face in the middle of the ruined street of @image3, a wrecked rusted sedan right beside them, the wide puddle at their feet, collapsed buildings and hanging cables beyond. Exactly two people in frame throughout; no on-screen text.\\n\\n[Shot 1] Tight handheld two-shot. @image2 steps into @image1's face and jabs a finger into his chest. @image2 (S1), low and threatening, says in English: \\\"Wrong street, pretty boy.\\\" His lips close right after the last word. @image1 stands completely still, lips pressed closed, and stares back.\\n\\n[Shot 2] At 00:02.500, hard cut to a medium shot. Without warning @image1 snaps a short right elbow into @image2's jaw; his head whips sideways and he staggers back against the sedan. He comes off it swinging a wild overhand right; @image1 parries it with his left forearm, traps the arm and drives a short hook and an uppercut into his ribs and chin.\\n\\n[Shot 3] At 00:06.000, hard cut to a low angle wide shot. @image1 fires a snapping front kick into @image2's chest that sends him stumbling backward into the puddle, water spraying up to his knees. @image2 lunges back in; @image1 catches him by the back of the neck and drags him two steps to the sedan's driver door.\\n\\n[Shot 4] At 00:09.000, hard cut to a tight handheld shot at the driver door. @image1 slams @image2's head into the side window and the glass shatters into a spray of pieces. He hauls him back and throws him over his hip; @image2 lands flat on his back in the wet rubble and stays there, motionless. @image1 straightens his jacket and stands over him, breathing hard.\\n\\nThroughout the whole video @image1 never speaks and keeps his lips closed; after his one line @image2 makes only grunts and sharp breaths, no words.\\n\\noverall_soundscape: Wind moving through the ruins, loose cables creaking and water dripping run under the whole video. Every body hit lands as a deep bass thud, the sedan's panels boom and rattle when he is thrown against it, the puddle splashes hard, and the side window bursts with a crunch of safety glass tinkling onto the ground. The only voices are the single line and the men's sharp breaths and short grunts, no other words. In the last seconds glass pieces settle on the rubble under heavy breathing and the wind.\\n\\nnon_diegetic_music: N/A\",\"audio_mode\":\"ref\",\"slots\":{\"first\":{},\"last\":{},\"images\":[{\"file\":\"cglide/glidepicture_1785433153283.png\"},{\"file\":\"cglide/glidepicture_1794959958967.png\"},{\"file\":\"cglide/Dystopische Zerst\u00f6rung.jfif\"},{},{},{},{},{},{}],\"videos\":[{},{},{}],\"audios\":[{},{},{}]},\"cont\":{},\"clip\":{\"name\":\"fight2\",\"index\":3,\"count\":3,\"project\":\"cyber5motor\"},\"song\":null,\"cont_latent\":true,\"upscale\":null,\"save_latent\":\"full\"}",
+    "h3_data": "{\"mode\":\"ref2va\",\"width\":1344,\"height\":768,\"length\":294,\"ref_image_size\":\"match\",\"ref_refine_scale\":1.5,\"up_width\":0,\"up_height\":0,\"pace\":2.5,\"prompt\":\"subject_definitions:\\n@image1 is the man in the tuxedo.\\n@image2 is the tattooed man in the grey top and cargo pants.\\n@image3 is the location: a ruined, flooded city street lined with wrecked rusted cars.\\n\\nsummary:\\n[reference generation] @image1 fights @image2 beside a wrecked sedan on the ruined street of @image3.\\n\\ndetailed_description:\\nprfight2, prfin1. Gritty practical action film, real-time speed with no slow motion, handheld camera close to the fighters, hard cuts landing on the impacts, desaturated daylight with cool cyan shadows. The layout is the same in every shot: @image1 and @image2 stand face to face in the middle of the ruined street of @image3, a wrecked rusted sedan right beside them, the wide puddle at their feet, collapsed buildings and hanging cables beyond. Exactly two people in frame throughout; no on-screen text.\\n\\n[Shot 1] Tight handheld two-shot. @image2 steps into @image1's face and jabs a finger into his chest. @image2 (S1), low and threatening, says in English: \\\"Wrong street, pretty boy.\\\" His lips close right after the last word. @image1 stands completely still, lips pressed closed, and stares back.\\n\\n[Shot 2] At 00:02.500, hard cut to a medium shot. Without warning @image1 snaps a short right elbow into @image2's jaw; his head whips sideways and he staggers back against the sedan. He comes off it swinging a wild overhand right; @image1 parries it with his left forearm, traps the arm and drives a short hook and an uppercut into his ribs and chin.\\n\\n[Shot 3] At 00:06.000, hard cut to a low angle wide shot. @image1 fires a snapping front kick into @image2's chest that sends him stumbling backward into the puddle, water spraying up to his knees. @image2 lunges back in; @image1 catches him by the back of the neck and drags him two steps to the sedan's driver door.\\n\\n[Shot 4] At 00:09.000, hard cut to a tight handheld shot at the driver door. @image1 slams @image2's head into the side window and the glass shatters into a spray of pieces. He hauls him back and throws him over his hip; @image2 lands flat on his back in the wet rubble and stays there, motionless. @image1 straightens his jacket and stands over him, breathing hard.\\n\\nThroughout the whole video @image1 never speaks and keeps his lips closed; after his one line @image2 makes only grunts and sharp breaths, no words.\\n\\noverall_soundscape: Wind moving through the ruins, loose cables creaking and water dripping run under the whole video. Every body hit lands as a deep bass thud, the sedan's panels boom and rattle when he is thrown against it, the puddle splashes hard, and the side window bursts with a crunch of safety glass tinkling onto the ground. The only voices are the single line and the men's sharp breaths and short grunts, no other words. In the last seconds glass pieces settle on the rubble under heavy breathing and the wind.\\n\\nnon_diegetic_music: N/A\",\"audio_mode\":\"ref\",\"slots\":{\"first\":{},\"last\":{},\"images\":[{\"file\":\"cglide/glidepicture_1785433153283.png\"},{\"file\":\"cglide/glidepicture_1794959958967.png\"},{\"file\":\"cglide/Dystopische Zerst\u00f6rung.jfif\"},{},{},{},{},{},{}],\"videos\":[{},{},{}],\"audios\":[{},{},{}]},\"cont\":{},\"clip\":{\"name\":\"fight2\",\"index\":3,\"count\":3,\"project\":\"cyber5motor\"},\"song\":null,\"cont_latent\":true,\"upscale\":null,\"derope\":{\"src\":{\"name\":\"03_fight2_00026.mp4\",\"subfolder\":\"cyber5motor\",\"type\":\"output\"}},\"save_latent\":\"full\"}",
     "h3_ui": ""
    }
   },
@@ -1061,7 +1069,7 @@
    "flags": {
     "collapsed": true
    },
-   "order": 12,
+   "order": 13,
    "mode": 0,
    "inputs": [
     {
@@ -1104,7 +1112,7 @@
    "flags": {
     "collapsed": true
    },
-   "order": 10,
+   "order": 11,
    "mode": 0,
    "inputs": [
     {
@@ -1137,8 +1145,8 @@
    "id": 211,
    "type": "GetNode",
    "pos": [
-    -340.2472829147655,
-    4632.006341043997
+    -167.33820077951162,
+    4594.35119670617
    ],
    "size": [
     225,
@@ -1175,8 +1183,8 @@
    "id": 212,
    "type": "GetNode",
    "pos": [
-    14.906862739104383,
-    4545.215798071371
+    187.81594487435822,
+    4507.560653733544
    ],
    "size": [
     210,
@@ -1223,7 +1231,7 @@
    "flags": {
     "collapsed": true
    },
-   "order": 20,
+   "order": 22,
    "mode": 0,
    "inputs": [
     {
@@ -1262,8 +1270,7 @@
    ],
    "widgets_values_named": {
     "attention": "comfy kitchen attention"
-   },
-   "title": "Attention: comfy kitchen (stable on long de-rope passes)"
+   }
   },
   {
    "id": 217,
@@ -1279,7 +1286,7 @@
    "flags": {
     "collapsed": true
    },
-   "order": 21,
+   "order": 23,
    "mode": 4,
    "inputs": [
     {
@@ -1334,7 +1341,7 @@
    "flags": {
     "collapsed": false
    },
-   "order": 16,
+   "order": 18,
    "mode": 0,
    "inputs": [
     {
@@ -1398,7 +1405,7 @@
     336.52170112698286
    ],
    "flags": {},
-   "order": 18,
+   "order": 20,
    "mode": 0,
    "inputs": [
     {
@@ -1476,15 +1483,15 @@
    "id": 239,
    "type": "CSGlideVideoCS",
    "pos": [
-    437.36152244621076,
-    4495.521069561711
+    613.8173494213084,
+    4458.712204261568
    ],
    "size": [
     947.1875,
     944.046875
    ],
    "flags": {},
-   "order": 19,
+   "order": 21,
    "mode": 0,
    "inputs": [
     {
@@ -1620,26 +1627,27 @@
     "aux_id": "CGlide/ComfyUI-CGlide",
     "glide_muted": false,
     "glide_last": {
-     "filename": "MiniMax_H3_derope_00015.mp4",
-     "subfolder": "video",
+     "filename": "03_fight2_derope_00003.mp4",
+     "subfolder": "cyber5motor",
      "type": "output",
      "fps": 24,
      "frames": 294,
      "width": 1344,
      "height": 768,
      "format": "video/mp4",
-     "master": "MiniMax_H3_derope_00015.mp4",
-     "master_subfolder": "video",
+     "master": "03_fight2_derope_00003.mp4",
+     "master_subfolder": "cyber5motor",
      "master_type": "output",
      "stream": "av1 / Main / yuv420p10le",
      "metadata": {
       "kind": "video",
       "width": 1344,
       "height": 768,
-      "duration": 12.25,
+      "duration": 12.208333333333334,
       "fps": 24,
-      "frame_count": 294
-     }
+      "frame_count": 293
+     },
+     "id": "f7971df5-87b7-4637-a017-3401c00c6658"
     }
    },
    "widgets_values": [
@@ -1671,17 +1679,17 @@
    "id": 240,
    "type": "de0af5dc-cda8-4672-981b-2ffa927ed45a",
    "pos": [
-    14.906862739104383,
-    4758.283774425087
+    187.81594487435822,
+    4720.628630087261
    ],
    "size": [
     210,
-    158
+    178
    ],
    "flags": {
     "collapsed": false
    },
-   "order": 17,
+   "order": 19,
    "mode": 0,
    "inputs": [
     {
@@ -1721,13 +1729,18 @@
      "localized_name": "sigmas",
      "name": "sigmas",
      "type": "SIGMAS",
-     "link": null
+     "link": 524
     },
     {
      "localized_name": "sampler",
      "name": "sampler",
      "type": "SAMPLER",
      "link": 495
+    },
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 528
     }
    ],
    "outputs": [
@@ -1772,8 +1785,8 @@
    "id": 241,
    "type": "ManualSigmas",
    "pos": [
-    -340.2472829147655,
-    4942.260258238967
+    -167.33820077951162,
+    4904.605113901141
    ],
    "size": [
     270,
@@ -1800,7 +1813,9 @@
      "localized_name": "SIGMAS",
      "name": "SIGMAS",
      "type": "SIGMAS",
-     "links": []
+     "links": [
+      524
+     ]
     }
    ],
    "properties": {
@@ -1819,8 +1834,8 @@
    "id": 243,
    "type": "VAEDecode",
    "pos": [
-    -340.2472829147655,
-    4531.216716174427
+    -167.33820077951162,
+    4493.561571836601
    ],
    "size": [
     224.984375,
@@ -1829,7 +1844,7 @@
    "flags": {
     "collapsed": false
    },
-   "order": 14,
+   "order": 16,
    "mode": 0,
    "inputs": [
     {
@@ -1870,8 +1885,8 @@
    "id": 244,
    "type": "VAEDecodeAudio",
    "pos": [
-    12.35243158955302,
-    4622.421168429428
+    185.26151372480692,
+    4584.766024091601
    ],
    "size": [
     227.546875,
@@ -1880,7 +1895,7 @@
    "flags": {
     "collapsed": false
    },
-   "order": 15,
+   "order": 17,
    "mode": 0,
    "inputs": [
     {
@@ -1916,6 +1931,168 @@
      "input_ue_unconnectable": {}
     }
    }
+  },
+  {
+   "id": 248,
+   "type": "CSGlidePreviewCS",
+   "pos": [
+    -560.8226833493358,
+    4463.746958735538
+   ],
+   "size": [
+    320,
+    380
+   ],
+   "flags": {},
+   "order": 15,
+   "mode": 0,
+   "inputs": [
+    {
+     "localized_name": "model",
+     "name": "model",
+     "type": "MODEL",
+     "link": 526
+    },
+    {
+     "localized_name": "mode",
+     "name": "mode",
+     "type": "COMBO",
+     "widget": {
+      "name": "mode"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "fps",
+     "name": "fps",
+     "type": "FLOAT",
+     "widget": {
+      "name": "fps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "columns",
+     "name": "columns",
+     "type": "INT",
+     "widget": {
+      "name": "columns"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "every_n_steps",
+     "name": "every_n_steps",
+     "type": "INT",
+     "widget": {
+      "name": "every_n_steps"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "max_resolution",
+     "name": "max_resolution",
+     "type": "INT",
+     "widget": {
+      "name": "max_resolution"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "sampler_preview",
+     "name": "sampler_preview",
+     "type": "BOOLEAN",
+     "widget": {
+      "name": "sampler_preview"
+     },
+     "link": null
+    },
+    {
+     "localized_name": "decoder",
+     "name": "decoder",
+     "shape": 7,
+     "type": "COMBO",
+     "widget": {
+      "name": "decoder"
+     },
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "localized_name": "model",
+     "name": "model",
+     "type": "MODEL",
+     "links": [
+      528
+     ]
+    }
+   ],
+   "properties": {
+    "cnr_id": "cglide",
+    "ver": "97d3407eb99d9f862092220fe1ee24c3db50f2bd",
+    "Node name for S&R": "CSGlidePreviewCS"
+   },
+   "widgets_values": [
+    "animated",
+    24,
+    4,
+    2,
+    512,
+    false,
+    "taeh3.safetensors",
+    ""
+   ],
+   "widgets_values_named": {
+    "mode": "animated",
+    "fps": 24,
+    "columns": 4,
+    "every_n_steps": 2,
+    "max_resolution": 512,
+    "sampler_preview": false,
+    "decoder": "taeh3.safetensors",
+    "gpv_ui": ""
+   }
+  },
+  {
+   "id": 250,
+   "type": "GetNode",
+   "pos": [
+    -560.8226833493358,
+    4435.757832189155
+   ],
+   "size": [
+    210,
+    60
+   ],
+   "flags": {
+    "collapsed": true
+   },
+   "order": 10,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      526
+     ]
+    }
+   ],
+   "title": "Get_model",
+   "properties": {
+    "Node name for S&R": "GetNode",
+    "aux_id": "kijai/ComfyUI-KJNodes"
+   },
+   "widgets_values": [
+    "model"
+   ],
+   "widgets_values_named": {
+    "Constant": "model"
+   },
+   "color": "#223",
+   "bgcolor": "#335"
   }
  ],
  "links": [
@@ -2126,6 +2303,30 @@
    239,
    3,
    "STRING"
+  ],
+  [
+   524,
+   241,
+   0,
+   240,
+   5,
+   "SIGMAS"
+  ],
+  [
+   526,
+   250,
+   0,
+   248,
+   0,
+   "MODEL"
+  ],
+  [
+   528,
+   248,
+   0,
+   240,
+   7,
+   "MODEL"
   ]
  ],
  "groups": [
@@ -2145,8 +2346,8 @@
    "id": 7,
    "title": "Sampling & Decoding",
    "bounding": [
-    -365.93113494774974,
-    4460.0407149448965,
+    -193.0220528124959,
+    4422.38557060707,
     639.7198936058746,
     514.0996787953391
    ],
@@ -2173,8 +2374,8 @@
     "version": 1,
     "state": {
      "lastGroupId": 10,
-     "lastNodeId": 247,
-     "lastLinkId": 523,
+     "lastNodeId": 250,
+     "lastLinkId": 528,
      "lastRerouteId": 1
     },
     "revision": 0,
@@ -2186,7 +2387,7 @@
       -338,
       6158.9609375,
       128,
-      188
+      208
      ]
     },
     "outputNode": {
@@ -2194,7 +2395,7 @@
      "bounding": [
       3230,
       6208.9609375,
-      128,
+      171.802734375,
       108
      ]
     },
@@ -2289,6 +2490,18 @@
       "pos": [
        -234,
        6302.9609375
+      ]
+     },
+     {
+      "id": "a9134cb0-f235-4b13-b4bb-4bf8cefd9819",
+      "name": "model",
+      "type": "MODEL",
+      "linkIds": [
+       527
+      ],
+      "pos": [
+       -234,
+       6322.9609375
       ]
      }
     ],
@@ -2542,7 +2755,7 @@
       "widgets_values": [
        124,
        0.75,
-       2,
+       4,
        true,
        "custom",
        8,
@@ -2558,7 +2771,7 @@
       "widgets_values_named": {
        "length": 124,
        "q": 0.75,
-       "d_max": 2,
+       "d_max": 4,
        "ramp": true,
        "preset": "custom",
        "bridge": 8,
@@ -2950,7 +3163,6 @@
         "name": "MODEL",
         "type": "MODEL",
         "links": [
-         467,
          471
         ]
        }
@@ -3075,7 +3287,7 @@
         "localized_name": "model",
         "name": "model",
         "type": "MODEL",
-        "link": 467
+        "link": 527
        },
        {
         "localized_name": "hold_map",
@@ -4168,14 +4380,6 @@
       "type": "VAE"
      },
      {
-      "id": 467,
-      "origin_id": 220,
-      "origin_slot": 0,
-      "target_id": 230,
-      "target_slot": 0,
-      "type": "MODEL"
-     },
-     {
       "id": 468,
       "origin_id": 225,
       "origin_slot": 1,
@@ -4446,6 +4650,14 @@
       "target_id": 247,
       "target_slot": 3,
       "type": "LATENT"
+     },
+     {
+      "id": 527,
+      "origin_id": -10,
+      "origin_slot": 7,
+      "target_id": 230,
+      "target_slot": 0,
+      "type": "MODEL"
      }
     ],
     "extra": {
@@ -4457,10 +4669,10 @@
  "config": {},
  "extra": {
   "ds": {
-   "scale": 0.5644739300537778,
+   "scale": 0.5644739300537774,
    "offset": [
-    2131.620914592283,
-    -4079.4263219534964
+    1489.0323729557101,
+    -4141.230879248032
    ]
   },
   "frontendVersion": "1.47.11",
