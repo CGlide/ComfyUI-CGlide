@@ -25,6 +25,7 @@ Wire it anywhere in the MODEL path; it passes the model straight through and
 only changes how previews are drawn.
 """
 
+import functools
 import base64
 import inspect
 import io
@@ -525,7 +526,7 @@ def _unpack(x0, latent_shapes):
 _WRAPPER_KEY = "csglide_preview"
 
 
-def _outer_sample_wrapper(executor, *args, **kwargs):
+def _outer_sample_wrapper(executor, *args, conf=None, **kwargs):
     """Sits on the model patcher, so it runs INSIDE anything else that wraps
     sampling.
 
@@ -536,6 +537,11 @@ def _outer_sample_wrapper(executor, *args, **kwargs):
     arrives at once, seconds before the run ends. Wrapping the callback here
     puts it back on the pass that is actually denoising.
     """
+    if conf:
+        # the settings travel with the model, so a cached node (no re-run)
+        # still previews with its own settings, and two Glide Previews in one
+        # graph each keep theirs
+        _CONF.update(conf)
     if not _CONF["enabled"]:
         return executor(*args, **kwargs)
 
@@ -694,18 +700,17 @@ class CSGlidePreview:
             return (model,)
         try:
             out = model.clone()
-            if _WRAPPER_KEY not in out.wrappers.get(WrappersMP.OUTER_SAMPLE, {}):
-                out.add_wrapper_with_key(
-                    WrappersMP.OUTER_SAMPLE, _WRAPPER_KEY, _outer_sample_wrapper)
+            conf = dict(_CONF)
+            fn = functools.partial(_outer_sample_wrapper, conf=conf)
+            out.wrappers.setdefault(WrappersMP.OUTER_SAMPLE, {})[_WRAPPER_KEY] = [fn]
             return (out,)
         except Exception as e:
             print("[Glide Preview] could not register the sampling wrapper (%s) "
                   "-- using the preview hook instead" % e)
             return (model,)
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")     # settings must reach the previewer every run
+    # No IS_CHANGED: the node caches like any other, so the sampler behind it
+    # is not forced to re-run every queue. The settings ride on the wrapper.
 
 
 NODE_CLASS_MAPPINGS = {"CSGlidePreviewCS": CSGlidePreview}

@@ -898,6 +898,18 @@ const CSS = `
 .gcast-upbanner .txt .b i { font-style:normal; font-size:8px; letter-spacing:.14em;
   text-transform:uppercase; opacity:.9; margin-top:2px; }
 @keyframes gcastUpStripes { to { background-position:28.284px 0; } }
+/* DE-ROPE MODE: the upscale banner's machinery, turned green. */
+.gcast-modebar.upmode.dermode { border-left-color:#59d36a;
+  background:linear-gradient(90deg, #12301a, #0b1f10 70%); }
+.gcast-modebar.dermode > .gcast-upbanner { filter:hue-rotate(80deg) saturate(1.1); }
+/* the Length card's de-rope line, under a hairline */
+.gcast-dersep { height:1px; margin:7px 0 6px; background:var(--h3-line); opacity:.8; }
+.gcast-derrow { display:flex; align-items:center; gap:8px; min-height:20px; }
+.gcast-label.der { color:#59d36a; white-space:nowrap; }
+.gcast-label.der.gcast-chk { display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+  margin:0; font-size:inherit; }
+.gcast-derrow .gcast-read { flex:1 1 auto; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
 @keyframes gcastUpGlow { from { opacity:.75; } to { opacity:1; } }
 @keyframes gcastUpA { 0% { opacity:0; } 2% { opacity:.85; } 3% { opacity:.2; } 5%, 44% { opacity:1; }
   46% { opacity:.25; } 47% { opacity:.9; } 49%, 100% { opacity:0; } }
@@ -2277,12 +2289,30 @@ function buildUI(node) {
     const useSlot = linked && c && c.file && c.upJoin > ((lastUp && lastUp.t) || 0);
     /* With the slot, its ORIGINAL render goes too: that is where the .h3latent
        the seam is held on lives. The copy in input/ is only the fallback. */
+    /* A de-roped take (lastDerope) newer than the draft is what gets
+       upscaled: de-rope is meant to sit between the draft and the upscale. */
+    const dr = sh.lastDerope;
+    const useDer = !!(dr && dr.name && (!sh.lastOut || (dr.t || 0) >= (sh.lastOut.t || 0)));
     return {
-      src: pickOf(sh.lastOut),
+      src: pickOf(useDer ? dr : sh.lastOut),
       prev: !linked ? null : useSlot ? pickOf(c.origin) : pickOf(lastUp),
       join: useSlot ? String(c.file) : "",
       overlap: linked ? songOverlap(p, p.idx) : 0,
     };
+  }
+
+  /* DE-ROPE PASS. The upscale pass's twin for a de-rope workflow (H3
+     Studio's latent -> Time Smear -> pass 2 -> Exact Recover, no first
+     sampler): the clip is built from the .h3full saved beside its draft, at
+     the draft's own size. Nothing to join onto. Its render goes out as
+     <clip>_derope and is not recorded as the clip's draft, so the draft
+     keeps pointing at the take that has the latent. */
+  const deropeOn = () => !!node.properties.gcast_derope && !upscaleOn();
+  function deropeMeta() {
+    if (!deropeOn()) return null;
+    const p = node.properties && node.properties.gcast_project;
+    if (!p || !Array.isArray(p.shots) || !(p.idx >= 0) || !p.shots[p.idx]) return { src: null };
+    return { src: pickOf(p.shots[p.idx].lastOut) };
   }
 
   /* SAVE LATENT, a project setting (settings wheel). Read straight from the
@@ -2355,7 +2385,7 @@ function buildUI(node) {
     p.shots.forEach((sh) => {
       const got = sh && sh.id && prj[sh.id];
       if (!got) return;
-      ["lastOut", "lastUp"].forEach((key) => {
+      ["lastOut", "lastUp", "lastDerope"].forEach((key) => {
         const r = got[key], cur = sh[key];
         if (!r || !r.name) return;
         if (cur && cur.name === r.name && (cur.subfolder || "") === (r.subfolder || "")) {
@@ -2370,7 +2400,7 @@ function buildUI(node) {
                     type: r.type === "temp" ? "temp" : "output", t: r.t || 0 };
         if (r.pick) sh[key].pick = true;
         changed = true;
-        console.log(`[H3 Studio] ${shotLabel(sh, p.shots.indexOf(sh))}: ${key === "lastUp" ? "upscale" : "render"} `
+        console.log(`[H3 Studio] ${shotLabel(sh, p.shots.indexOf(sh))}: ${key === "lastUp" ? "upscale" : key === "lastDerope" ? "de-rope" : "render"} `
                     + `picked up from another workflow \u2192 ${r.name}`);
       });
     });
@@ -2478,7 +2508,7 @@ function buildUI(node) {
       { clip: clipMeta(), song: songMeta(),
         /* node-level, like "+ look": Render all clears and refills CONTINUE
            FROM on every link, so a flag kept in the slot would not survive */
-        cont_latent: latentHoldOn(), upscale: upscaleMeta(),
+        cont_latent: latentHoldOn(), upscale: upscaleMeta(), derope: deropeMeta(),
         save_latent: upscaleOn() ? "tail" : saveLatentMode() }));
     node.setDirtyCanvas(true, true);
   };
@@ -2723,6 +2753,7 @@ function buildUI(node) {
   upLabel.onpointerdown = (e) => e.stopPropagation();
   cbUp.onchange = () => {
     node.properties.gcast_upscale = cbUp.checked;
+    if (cbUp.checked) node.properties.gcast_derope = false;   /* one pass mode at a time */
     /* Ticking it on starts from the usual upscale setup: 1080p if no size is
        set yet, and refine 2x (or the factor last picked in upscale mode). */
     if (cbUp.checked) {
@@ -2780,6 +2811,27 @@ function buildUI(node) {
   lenCtl.append(selLen.el, inLen);
   const lenNote = el("div", "gcast-read");
   cLen.append(lenCtl, lenNote);
+  /* DE-ROPE tick, under a hairline: ticked, Render builds each clip from the
+     full latent saved with its draft, for a de-rope workflow. Green, the
+     upscale tick's twin - and the two exclude each other. */
+  const derLabel = el("label", "gcast-chk gcast-label der");
+  const cbDer = el("input"); cbDer.type = "checkbox";
+  derLabel.append(cbDer, el("span", null, "De-rope"));
+  derLabel.title = "De-rope pass, for a de-rope workflow (H3 Studio's latent \u2192 Time Smear "
+    + "\u2192 pass 2 \u2192 Exact Recover, no first sampler). Ticked, each clip is built from the "
+    + "full latent saved with its draft (save_latent = full), at the draft size. The render is "
+    + "saved as <clip>_derope; the draft is left untouched.";
+  derLabel.onpointerdown = (e) => e.stopPropagation();
+  const derNote = el("div", "gcast-read");
+  cbDer.onchange = () => {
+    node.properties.gcast_derope = cbDer.checked;
+    if (cbDer.checked) node.properties.gcast_upscale = false;  /* one pass mode at a time */
+    render(); commit();
+    tlSig = ""; paintTimeline();
+  };
+  const derRow = el("div", "gcast-derrow");
+  derRow.append(derLabel, derNote);
+  cLen.append(el("div", "gcast-dersep"), derRow);
 
   const cRef = el("div", "gcast-card");
   cRef.append(el("div", "gcast-label", "Reference size"));
@@ -4784,13 +4836,30 @@ function buildUI(node) {
 
   function paintUpBanner() {
     const on = upscaleOn();
+    const der = deropeOn();
     cbUp.checked = on;
+    cbDer.checked = der;
     upLabel.classList.toggle("on", on);
     /* not mid-run: switching modes under a running Render would mix them */
-    try { cbUp.disabled = !!run; } catch (e) { cbUp.disabled = false; }
-    modeBar.classList.toggle("upmode", on);
+    try { cbUp.disabled = cbDer.disabled = !!run; } catch (e) { cbUp.disabled = cbDer.disabled = false; }
+    modeBar.classList.toggle("upmode", on || der);
+    modeBar.classList.toggle("dermode", der);
+    {
+      const b = upBanner.querySelector(".b");
+      if (b) b.innerHTML = der ? "<b>DE-ROPE MODE</b><i>re-times saved .h3full latents</i>"
+                               : "<b>UPSCALE MODE</b><i>refines saved .h3full latents</i>";
+    }
+    {
+      const p = node.properties && node.properties.gcast_project;
+      const sh = p && Array.isArray(p.shots) && p.idx >= 0 ? p.shots[p.idx] : null;
+      derNote.textContent = !der ? "re-time the saved latent"
+        : sh && sh.lastOut ? sh.lastOut.name : "no draft recorded";
+      derNote.title = derNote.textContent;
+    }
     modeBar.title = on ? "Upscale pass is ON: Render rebuilds each clip from its saved .h3full "
-      + "latent instead of generating. Untick \"Upscale to\" in the Canvas card for drafts." : "";
+      + "latent instead of generating. Untick \"Upscale to\" in the Canvas card for drafts."
+      : der ? "De-rope pass is ON: Render hands each clip's saved .h3full latent to the de-rope "
+      + "nodes instead of generating. Untick \"De-rope\" in the Length card for drafts." : "";
   }
 
   function renderInner() {
@@ -7788,8 +7857,10 @@ function buildUI(node) {
     }
     const raw = mine && mine.inputs && mine.inputs.h3_data;
     if (typeof raw !== "string") return;
-    let clip = null, isUp = false;
-    try { const d = JSON.parse(raw); clip = d.clip; isUp = !!d.upscale; } catch (e) { return; }
+    let clip = null, isUp = false, isDer = false;
+    try {
+      const d = JSON.parse(raw); clip = d.clip; isUp = !!d.upscale; isDer = !!d.derope;
+    } catch (e) { return; }
     if (!clip || !(clip.index >= 1)) return;
     const p = proj();
     const sh = p.shots[clip.index - 1];
@@ -7798,7 +7869,8 @@ function buildUI(node) {
     if (clip.count && clip.count !== p.shots.length) return;
     const out = videoFromHistory(entry);
     if (!out) return;
-    const key = isUp ? "lastUp" : "lastOut";
+    /* a de-rope is recorded apart: the draft keeps the take it was made from */
+    const key = isUp ? "lastUp" : isDer ? "lastDerope" : "lastOut";
     const was = sh[key] && sh[key].name;
     sh[key] = { name: out.name, subfolder: out.subfolder || "", type: out.type || "output",
                 t: Date.now() };
@@ -7806,7 +7878,7 @@ function buildUI(node) {
     refreshLatentsSoon();
     if (was !== out.name) {
       console.log(`[H3 Studio] ${shotLabel(sh, clip.index - 1)} `
-                + `${isUp ? "upscaled" : "rendered"} \u2192 ${out.name}`
+                + `${isUp ? "upscaled" : isDer ? "de-roped" : "rendered"} \u2192 ${out.name}`
                 + (was ? ` (was ${was})` : ""));
     }
     commit();
@@ -7938,7 +8010,7 @@ function buildUI(node) {
 
     q(".ttl").textContent = run.cancel ? "Stopping after this clip" : "Rendering the project";
     const tag = q(".tag");
-    tag.textContent = run.upscale ? "upscale" : "draft";
+    tag.textContent = run.upscale ? "upscale" : run.derope ? "de-rope" : "draft";
     tag.classList.toggle("up", !!run.upscale);
     q(".msg").textContent = `${name} — ${run.k + 1} of ${run.total}`;
     q(".msg").title = name;
@@ -8069,6 +8141,25 @@ function buildUI(node) {
     const queue = scope === "clip" ? range.slice() : range.filter((i) => !p.shots[i].off);
     if (!queue.length) {
       alert("H3 Studio: every clip in that range is skipped.");
+      return;
+    }
+
+    if (deropeOn()) {
+      /* De-rope pass: every clip needs its draft (whose .h3full is loaded);
+         nothing joins, nothing is recorded as a draft. */
+      const noDraftD = queue.filter((i) => !p.shots[i].lastOut);
+      if (noDraftD.length) {
+        alert("H3 Studio de-rope pass: these clips have no draft render recorded, "
+              + "so there is no latent to de-rope:\n\n"
+              + noDraftD.map((i) => shotLabel(p.shots[i], i)).join(", ")
+              + "\n\nRender their drafts first (save_latent = full), or narrow the scope.");
+        return;
+      }
+      await runLoop({
+        v: 1, id: uid(), t: Date.now(), scope, look: false, links: 0, queue, derope: true,
+        skipped: range.length - queue.length, startIdx: p.idx,
+        k: 0, promptId: null, made: [],
+      }, false);
       return;
     }
 
@@ -8260,7 +8351,7 @@ function buildUI(node) {
             look: state.look, links: state.links || 0,
             note: resumed ? "picking the run back up\u2026" : "", made: (state.made || []).slice(),
             /* for the panel only: queue, timings, live sampler progress */
-            queue: queue.slice(), upscale: !!state.upscale, t0: Date.now(), clipT0: Date.now(),
+            queue: queue.slice(), upscale: !!state.upscale, derope: !!state.derope, t0: Date.now(), clipT0: Date.now(),
             durs: [], promptId: state.promptId || null, step: null, nodeName: "",
             started: false, ahead: null };
     paintRun();
@@ -8315,6 +8406,9 @@ function buildUI(node) {
               }
               render(); commit(); stash();
             }
+          } else if (state.derope) {
+            /* De-rope: the take already holds its join - CONTINUE FROM and the
+               seam reference are left exactly as they are. */
           } else if (linked && from) {
             run.note = "taking the tail of " + shotLabel(pred, i - 1) + "\u2026"; paintRun();
             await raceCancel(adoptInto(st.cont, from));
@@ -8381,9 +8475,12 @@ function buildUI(node) {
         }
         /* Recorded on the clip, so the next link can find it from any scope,
            in this run or a later one. */
-        sh[state.upscale ? "lastUp" : "lastOut"] = { name: out.name,
-                       subfolder: out.subfolder || "", type: out.type || "output", t: Date.now() };
-        storeRecord(proj(), sh, state.upscale ? "lastUp" : "lastOut", sh[state.upscale ? "lastUp" : "lastOut"]);
+        {   /* a de-rope is recorded apart: the draft keeps the take it was made from */
+          const rk = state.upscale ? "lastUp" : state.derope ? "lastDerope" : "lastOut";
+          sh[rk] = { name: out.name,
+                     subfolder: out.subfolder || "", type: out.type || "output", t: Date.now() };
+          storeRecord(proj(), sh, rk, sh[rk]);
+        }
         refreshLatentsSoon();
         run.made.push(out.name);
         run.durs.push(Date.now() - run.clipT0);
@@ -8812,7 +8909,7 @@ function buildUI(node) {
     busy("packing project\u2026");
     try {
       const shots = clone(p.shots);
-      shots.forEach((s) => { delete s.lastOut; delete s.lastUp; });  // paths on this machine only
+      shots.forEach((s) => { delete s.lastOut; delete s.lastUp; delete s.lastDerope; });  // paths on this machine only
       const entries = [];
       const add = makeAssetAdder(entries, new Map(), new Set());
       for (const s of shots) await packSlots(s.state.slots, add);
@@ -8915,6 +9012,7 @@ function buildUI(node) {
               type: typeof s.lastOut.type === "string" ? s.lastOut.type : "output" }
           : null,
         lastUp: pickOf(s && s.lastUp),
+        lastDerope: pickOf(s && s.lastDerope),
         state: parseInitial(JSON.stringify((s && s.state) || {})),
       }));
       /* A file written before links has no link fields at all, so infer them
@@ -8924,7 +9022,8 @@ function buildUI(node) {
       if (!p.song) delete p.song;
       if (!(d.meta && d.meta.links)) inferLinks(p.shots);
       if (p.shots[0]) p.shots[0].link = false;
-      p.shots.forEach((s) => { if (!s.lastOut) delete s.lastOut; if (!s.lastUp) delete s.lastUp; });
+      p.shots.forEach((s) => { if (!s.lastOut) delete s.lastOut; if (!s.lastUp) delete s.lastUp;
+                               if (!s.lastDerope) delete s.lastDerope; });
       node.properties.gcast_links = 1;
       if (remap) {
         const fix = (it) => { if (it && it.file && remap.has(it.file)) it.file = remap.get(it.file); };

@@ -226,6 +226,14 @@ def _parse_upscale(raw):
             "overlap": ov if ov in (5, 22, 39) else (22 if ov > 0 else 0)}
 
 
+def _parse_derope(raw):
+    """DE-ROPE PASS: the clip's draft take whose .h3full is handed out as the
+    latent, at the draft's own size, for a de-rope workflow to re-time."""
+    if not isinstance(raw, dict):
+        return None
+    return {"src": _clean_origin(raw.get("src"))}
+
+
 def _render_path(org, ext=None):
     """A recorded render ({name, subfolder, type}) -> an absolute path inside
     output/ or temp/, optionally with its extension swapped. None if it is
@@ -942,6 +950,12 @@ def parse_h3_data(raw):
         # Join the previous clip's UPSCALED render. Sent by the panel only
         # while the Render row's "upscale" box is on.
         "upscale": _parse_upscale(data.get("upscale")),
+        # DE-ROPE PASS: like the upscale pass, the clip is built from the full
+        # latent saved with its draft instead of an empty one, but handed out
+        # at the draft size, for H3 de-rope (Time Smear -> pass 2 -> Exact
+        # Recover). The render goes out as <clip>_derope and is not recorded
+        # as the clip's draft, so the draft stays the one with the .h3full.
+        "derope": _parse_derope(data.get("derope")),
         # SAVE LATENT: what Glide Video writes beside the render, chosen once in
         # the project settings instead of on every Glide Video. The panel sends
         # "tail" by itself during an upscale pass (the refined tail is what the
@@ -2029,28 +2043,29 @@ class CSGlideCast:
                      "cglide_weight": weight}
 
     @staticmethod
-    def _load_full(up, cfg):
+    def _load_full(up, cfg, what="upscale"):
         """The clip's saved full latent, as (latent, frame_count, width, height)."""
         if not up.get("src"):
             who = clip_label(cfg) or "this clip"
             raise FileNotFoundError(
-                "H3 Studio upscale pass: %s has no draft render recorded, so there "
-                "is no latent to upscale. The upscale pass works on a project clip "
-                "whose draft was rendered with save_latent = full. To upscale any "
-                "other take, load its .h3full with Glide Latent Load instead." % who)
+                "H3 Studio %s pass: %s has no draft render recorded, so there "
+                "is no latent to %s. The %s pass works on a project clip "
+                "whose draft was rendered with save_latent = full. For any "
+                "other take, load its .h3full with Glide Latent Load instead."
+                % (what, who, what, what))
         path = _render_path(up.get("src"), FULL_SIDECAR)
         if path is None:
             who = clip_label(cfg) or "this clip"
             raise FileNotFoundError(
-                "H3 Studio upscale pass: %s has no full latent (.h3full) next to its "
+                "H3 Studio %s pass: %s has no full latent (.h3full) next to its "
                 "draft render. Render its draft with save_latent = full on Glide "
-                "Video, then run the upscale pass again." % who)
+                "Video, then run the %s pass again." % (what, who, what))
         from safetensors.torch import load_file
         saved = load_file(path)
         video = saved.get("video")
         if video is None or video.dim() != 5:
-            raise ValueError("H3 Studio upscale pass: %s holds no video latent"
-                             % os.path.basename(path))
+            raise ValueError("H3 Studio %s pass: %s holds no video latent"
+                             % (what, os.path.basename(path)))
         dev = comfy.model_management.intermediate_device()
         video = video.to(dev)
         audio = saved.get("audio")
@@ -2060,7 +2075,7 @@ class CSGlideCast:
             samples = video
         t = int(video.shape[2])
         frames = 5 if t <= 2 else ((t - 2) // 5) * 17 + 5
-        print("[H3 Studio] upscale pass: loaded %s" % os.path.basename(path))
+        print("[H3 Studio] %s pass: loaded %s" % (what, os.path.basename(path)))
         return ({"samples": samples}, frames,
                 int(video.shape[4]) * 16, int(video.shape[3]) * 16)
 
@@ -2356,7 +2371,10 @@ class CSGlideCast:
             source = ""
             if cfg.get("cont"):
                 source = _resolve_asset(cfg["cont"]["file"]) or cfg["cont"]["file"]
-            return (lat, overlap, source, clip_label(cfg), locked_audio, cond,
+            label = clip_label(cfg)
+            if der and label:
+                label += "_derope"
+            return (lat, overlap, source, label, locked_audio, cond,
                     self._without_keyframes(refine_cond
                                             if refine_cond is not None else cond),
                     width, height, frame_count, seconds, refine_mul,
@@ -2370,6 +2388,14 @@ class CSGlideCast:
         latent, locked_audio = self._lock_audio(cfg, audio_vae, latent, seconds)
 
         up = cfg.get("upscale")
+        der = cfg.get("derope") if not up else None
+        if der:
+            latent, frame_count, width, height = self._load_full(der, cfg, "de-rope")
+            seconds = frame_count / FPS
+            locked_audio = self._silence()         # the take already has its sound
+            cfg["cont"] = None                     # and its join
+            print("[H3 Studio] de-rope pass: %s, %d frames at %dx%d"
+                  % (clip_label(cfg) or "clip", frame_count, width, height))
         up_source, up_overlap = "", 0
         if up:
             latent, frame_count, width, height = self._load_full(up, cfg)
